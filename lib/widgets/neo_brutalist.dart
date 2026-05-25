@@ -95,7 +95,7 @@ class NeoButton extends StatefulWidget {
     this.borderColor = NeoColors.rpgText,
     this.borderWidth = 3.0,
     this.borderRadius = 12.0,
-    this.shadowOffset = const Offset(3, 3),
+    this.shadowOffset = const Offset(4, 4),
     this.shadowColor = NeoColors.rpgText,
     this.padding = const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
   });
@@ -131,18 +131,18 @@ class _NeoButtonState extends State<NeoButton> with SingleTickerProviderStateMix
     return GestureDetector(
       onTapDown: (_) {
         if (widget.onPressed != null) {
-          _controller.animateTo(1.0, duration: const Duration(milliseconds: 60), curve: Curves.easeIn);
+          _controller.animateTo(1.0, duration: const Duration(milliseconds: 80), curve: Curves.easeOut);
         }
       },
       onTapUp: (_) {
         if (widget.onPressed != null) {
-          _controller.animateTo(0.0, duration: const Duration(milliseconds: 250), curve: Curves.easeOutBack);
+          _controller.animateTo(0.0, duration: const Duration(milliseconds: 120), curve: Curves.easeIn);
           widget.onPressed?.call();
         }
       },
       onTapCancel: () {
         if (widget.onPressed != null) {
-          _controller.animateTo(0.0, duration: const Duration(milliseconds: 250), curve: Curves.easeOutBack);
+          _controller.animateTo(0.0, duration: const Duration(milliseconds: 120), curve: Curves.easeIn);
         }
       },
       child: AnimatedBuilder(

@@ -70,6 +70,9 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   // Localization Language
   String _currentLanguage = "genz"; // Default to Gen Z
 
+  // Glow trigger to animate the pet when score >= 80 or species changes
+  int _petGlowTrigger = 0;
+
   // Pet dialogue state
   String _speechText = "...";
   bool _speechVisible = false;
@@ -512,6 +515,8 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     }
 
     final bool leveledUp = localRankIndex > _currentRankIndex;
+    final bool perfectChargeHappened = localGlobalMetrics.perfectCharges > _globalMetrics.perfectCharges;
+    final bool xpReached100 = (localXp >= 100 && _xp < 100);
     final bool hasPenalty = localGlobalMetrics.overcharges > _globalMetrics.overcharges ||
                             localGlobalMetrics.criticalStarts > _globalMetrics.criticalStarts;
 
@@ -522,6 +527,11 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
       _simFinalHp = localHp;
       _simFinalXp = localXp;
       _simFinalRankIndex = localRankIndex;
+
+      if (leveledUp || perfectChargeHappened || xpReached100) {
+        _petGlowTrigger++;
+      }
+
       _weeklyStats.clear();
       _weeklyStats.addAll(localWeeklyStats);
       _dailyData.clear();
@@ -585,6 +595,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
   void _manualGoodCharge() {
     final oldRank = _currentRankIndex;
+    final oldXp = _xp;
     setState(() {
       _hp = math.min(100, _hp + 15);
       _xp += 30;
@@ -599,6 +610,11 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
       _simFinalHp = _hp;
       _simFinalXp = _xp;
       _simFinalRankIndex = _currentRankIndex;
+
+      // Trigger evolution glow on XP milestones or rank increases
+      if (_currentRankIndex > oldRank || (_xp >= 100 && oldXp < 100) || _xp == 0) {
+        _petGlowTrigger++;
+      }
     });
     if (_currentRankIndex > oldRank) {
       _triggerScreenShake();
@@ -701,6 +717,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                           speechText: _speechText,
                           speechVisible: _speechVisible,
                           floatingTexts: _floatingTexts,
+                          glowTrigger: _petGlowTrigger,
                         ),
                         const SizedBox(height: 12),
 
@@ -937,7 +954,6 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
               backgroundColor: Colors.white,
               borderWidth: 2.0,
               borderRadius: 20.0,
-              shadowOffset: const Offset(2, 2),
               padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 4.0),
               onPressed: _talkToPet,
               child: Text(
@@ -960,10 +976,13 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   Widget _buildSpeciesButton(String species, String label) {
     return GestureDetector(
       onTap: () {
-        setState(() {
-          _currentSpecies = species;
-          _spawnFloatingText(species.toUpperCase(), NeoColors.primary);
-        });
+        if (_currentSpecies != species) {
+          setState(() {
+            _currentSpecies = species;
+            _petGlowTrigger++;
+            _spawnFloatingText(species.toUpperCase(), NeoColors.primary);
+          });
+        }
       },
       child: Container(
         decoration: BoxDecoration(
@@ -1113,6 +1132,12 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
               if (dayMetrics.rankAtEndOfDay != null) _currentRankIndex = dayMetrics.rankAtEndOfDay!;
             });
             _showSpeechBubble(petQuote);
+
+            if (dayMetrics.averageScore >= 80) {
+              setState(() {
+                _petGlowTrigger++;
+              });
+            }
           },
           onDayDismissed: () {
             setState(() {
@@ -2109,7 +2134,7 @@ class NeoProgressBar extends StatelessWidget {
       children: [
         TweenAnimationBuilder<double>(
           tween: Tween<double>(begin: 0.0, end: value.toDouble()),
-          duration: const Duration(milliseconds: 800),
+          duration: const Duration(milliseconds: 600),
           curve: Curves.easeOutCubic,
           builder: (context, animVal, child) {
             final displayVal = animVal.round();
@@ -2158,7 +2183,7 @@ class NeoProgressBar extends StatelessWidget {
             borderRadius: BorderRadius.circular(height),
             child: TweenAnimationBuilder<double>(
               tween: Tween<double>(begin: 0.0, end: value.toDouble()),
-              duration: const Duration(milliseconds: 800),
+              duration: const Duration(milliseconds: 600),
               curve: Curves.easeOutCubic,
               builder: (context, animVal, child) {
                 final widthFactor = math.max(0.0, math.min(1.0, animVal / maxValue));

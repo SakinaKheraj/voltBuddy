@@ -340,9 +340,9 @@ class _HeatmapWidgetState extends State<HeatmapWidget> {
     // Grid elements count = 1 label + 7 days = 8 columns
     final List<Widget> gridItems = [];
 
-    // Header Row: corner empty space, then day labels F, S, S (matching screenshot)
+    // Header Row: corner empty space, then day labels M, T, W, T, F, S, S (matching screenshot)
     gridItems.add(const SizedBox.shrink());
-    final dayLabels = ['', '', '', '', 'F', 'S', 'S'];
+    final dayLabels = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
     for (var label in dayLabels) {
       gridItems.add(
         Center(
@@ -373,12 +373,12 @@ class _HeatmapWidgetState extends State<HeatmapWidget> {
           child: Padding(
             padding: const EdgeInsets.only(right: 4.0),
             child: Text(
-              showMonth ? monthStr : '',
+              showMonth ? monthStr.toUpperCase() : '',
               style: TextStyle(
                 fontFamily: 'Space Grotesk',
-                fontSize: 8.0,
+                fontSize: 9.0,
                 fontWeight: FontWeight.bold,
-                color: NeoColors.rpgText.withValues(alpha: 0.4),
+                color: NeoColors.rpgText.withValues(alpha: 0.5),
               ),
             ),
           ),
@@ -414,33 +414,62 @@ class _HeatmapWidgetState extends State<HeatmapWidget> {
     final totalSessions = widget.globalMetrics.total;
 
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        // Visual Header mimicking reference screenshot
+        Row(
+          children: [
+            const Icon(Icons.grid_view, color: NeoColors.rpgText, size: 20.0),
+            const SizedBox(width: 8),
+            Text(
+              loc.translate('charging_heatmap', defaultVal: 'Charging Heatmap').toUpperCase(),
+              style: const TextStyle(
+                fontFamily: 'Space Grotesk',
+                fontWeight: FontWeight.w900,
+                fontSize: 16.0,
+                color: NeoColors.rpgText,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+
         // Heatmap toggles
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            _buildToggleButton('sessions', "🔢 ${loc.translate('heatmap_sessions', defaultVal: 'Sessions')}"),
+            _buildToggleButton('sessions', loc.translate('heatmap_sessions', defaultVal: 'Sessions'), Icons.format_list_numbered, Colors.blue),
             const SizedBox(width: 6),
-            _buildToggleButton('quality', "⭐ ${loc.translate('heatmap_quality', defaultVal: 'Quality')}"),
+            _buildToggleButton('quality', loc.translate('heatmap_quality', defaultVal: 'Quality'), Icons.star, Colors.amber),
             const SizedBox(width: 6),
-            _buildToggleButton('score', "📊 ${loc.translate('heatmap_score', defaultVal: 'Score')}"),
+            _buildToggleButton('score', loc.translate('heatmap_score', defaultVal: 'Score'), Icons.bar_chart, Colors.green),
           ],
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 6),
         // Heatmap Grid Box
         NeoCard(
           backgroundColor: NeoColors.rpgBg,
           borderWidth: 3.0,
           shadowOffset: const Offset(2, 2),
-          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+          padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
           child: Column(
             children: [
-              GridView.count(
-                crossAxisCount: 8,
-                childAspectRatio: 1.0,
-                physics: const NeverScrollableScrollPhysics(),
-                shrinkWrap: true,
-                children: gridItems,
+              SizedBox(
+                width: double.infinity,
+                child: GridView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: gridItems.length,
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 8,
+                    mainAxisSpacing: 4,
+                    crossAxisSpacing: 4,
+                    childAspectRatio: 1,
+                  ),
+                  itemBuilder: (context, index) {
+                    return gridItems[index];
+                  },
+                ),
               ),
 
               const SizedBox(height: 10),
@@ -452,7 +481,12 @@ class _HeatmapWidgetState extends State<HeatmapWidget> {
                     children: [
                       Text(
                         loc.translate('heatmap_less', defaultVal: 'Less'),
-                        style: TextStyle(fontFamily: 'Space Grotesk', fontSize: 9.0, fontWeight: FontWeight.bold, color: NeoColors.rpgText.withValues(alpha: 0.7)),
+                        style: TextStyle(
+                          fontFamily: 'Space Grotesk',
+                          fontSize: 9.0,
+                          fontWeight: FontWeight.bold,
+                          color: NeoColors.rpgText.withValues(alpha: 0.6),
+                        ),
                       ),
                       const SizedBox(width: 4),
                       _buildLegendSwatch(const Color(0xFF9CA3AF)),
@@ -463,18 +497,23 @@ class _HeatmapWidgetState extends State<HeatmapWidget> {
                       const SizedBox(width: 4),
                       Text(
                         loc.translate('heatmap_more', defaultVal: 'More'),
-                        style: TextStyle(fontFamily: 'Space Grotesk', fontSize: 9.0, fontWeight: FontWeight.bold, color: NeoColors.rpgText.withValues(alpha: 0.7)),
+                        style: TextStyle(
+                          fontFamily: 'Space Grotesk',
+                          fontSize: 9.0,
+                          fontWeight: FontWeight.bold,
+                          color: NeoColors.rpgText.withValues(alpha: 0.6),
+                        ),
                       ),
                     ],
                   ),
 
                   Text(
-                    "$totalDays active day${totalDays != 1 ? 's' : ''} · $totalSessions sessions",
+                    "$totalDays ACTIVE DAYS · $totalSessions SESSIONS",
                     style: TextStyle(
                       fontFamily: 'Space Grotesk',
-                      fontSize: 8.5,
+                      fontSize: 9.0,
                       fontWeight: FontWeight.bold,
-                      color: NeoColors.rpgText.withValues(alpha: 0.5),
+                      color: NeoColors.rpgText.withValues(alpha: 0.6),
                     ),
                   ),
                 ],
@@ -499,7 +538,7 @@ class _HeatmapWidgetState extends State<HeatmapWidget> {
     );
   }
 
-  Widget _buildToggleButton(String buttonMode, String label) {
+  Widget _buildToggleButton(String buttonMode, String label, IconData icon, Color iconColor) {
     final active = _mode == buttonMode;
     return GestureDetector(
       onTap: () {
@@ -509,11 +548,11 @@ class _HeatmapWidgetState extends State<HeatmapWidget> {
         _dismissPopover();
       },
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        duration: const Duration(milliseconds: 100),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         decoration: BoxDecoration(
           color: active ? NeoColors.rpgText : Colors.white,
-          borderRadius: BorderRadius.circular(8.0),
+          borderRadius: BorderRadius.circular(10.0),
           border: Border.all(color: NeoColors.rpgText, width: 2.0),
           boxShadow: active
               ? null
@@ -525,14 +564,25 @@ class _HeatmapWidgetState extends State<HeatmapWidget> {
                   ),
                 ],
         ),
-        child: Text(
-          label.toUpperCase(),
-          style: TextStyle(
-            fontFamily: 'Space Grotesk',
-            fontSize: 9.0,
-            fontWeight: FontWeight.bold,
-            color: active ? Colors.white : NeoColors.rpgText,
-          ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icon,
+              size: 13.0,
+              color: active ? Colors.white : iconColor,
+            ),
+            const SizedBox(width: 5),
+            Text(
+              label.toUpperCase(),
+              style: TextStyle(
+                fontFamily: 'Space Grotesk',
+                fontSize: 9.5,
+                fontWeight: FontWeight.w900,
+                color: active ? Colors.white : NeoColors.rpgText,
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -680,7 +730,7 @@ class _HeatmapCellState extends State<_HeatmapCell> with SingleTickerProviderSta
         child: AnimatedBuilder(
           animation: _clickScaleAnimation,
           builder: (context, child) {
-            final baseScale = _isHovered || _isPressed ? 1.15 : 1.0;
+            final baseScale = _isHovered || _isPressed ? 1.05 : 1.0;
             final clickScale = _clickScaleAnimation.value;
             final totalScale = baseScale * clickScale;
             return Transform.scale(
@@ -688,15 +738,17 @@ class _HeatmapCellState extends State<_HeatmapCell> with SingleTickerProviderSta
               alignment: Alignment.center,
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 150),
-                margin: const EdgeInsets.all(1.5),
+                margin: const EdgeInsets.all(1),
                 decoration: BoxDecoration(
                   color: widget.color,
-                  borderRadius: BorderRadius.circular(4.0),
+                  borderRadius: BorderRadius.circular(6.5),
                   border: Border.all(
                     color: (_isHovered || _isPressed)
                         ? NeoColors.primary
                         : (widget.hasData ? NeoColors.rpgText : const Color(0xFFD1CBB8)),
-                    width: (_isHovered || _isPressed) ? 2.5 : 1.5,
+                    width: (_isHovered || _isPressed)
+                        ? 2.0
+                        : (widget.hasData ? 2.0 : 1.0),
                   ),
                   boxShadow: (_isHovered || _isPressed)
                       ? [
