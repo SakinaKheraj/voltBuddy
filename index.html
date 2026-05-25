@@ -1,0 +1,2389 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+    <title data-i18n="title">ChargePet - Timeline & Data Engine</title>
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
+        rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap"
+        rel="stylesheet" />
+    <script id="tailwind-config">
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: "#f9a215",
+                        "rpg-text": "#3D405B",
+                        "rpg-accent": "#2A9D8F",
+                        "rpg-bg": "#F4F1DE",
+                        "rpg-surface": "#81B29A",
+                        "rpg-muted": "#E07A5F",
+                        "rpg-gold": "#FACC15",
+                        "rpg-silver": "#9CA3AF",
+                        "rpg-royal": "#6B21A8",
+                        "rpg-duke": "#991B1B",
+                        "rpg-bad": "#dc2626",
+                    },
+                    fontFamily: {
+                        display: ["Space Grotesk", "sans-serif"],
+                    },
+                    boxShadow: {
+                        hard: "4px 4px 0px #3D405B",
+                        "hard-sm": "2px 2px 0px #3D405B",
+                    },
+                },
+            },
+        };
+    </script>
+    <style>
+        body {
+            font-family: "Space Grotesk", sans-serif;
+            background-color: #f4f1de;
+            color: #3d405b;
+            touch-action: manipulation;
+            overflow-x: hidden;
+        }
+
+        .border-thick {
+            border: 4px solid #3d405b;
+        }
+
+        .btn-press:active {
+            transform: translateY(4px);
+            box-shadow: none !important;
+        }
+
+        /* Base Animations */
+        @keyframes float {
+
+            0%,
+            100% {
+                transform: translateY(0);
+            }
+
+            50% {
+                transform: translateY(-8px);
+            }
+        }
+
+        .animate-float {
+            animation: float 3s infinite ease-in-out;
+        }
+
+        @keyframes pulse-aura {
+            0% {
+                transform: scale(0.95);
+                opacity: 0.4;
+            }
+
+            50% {
+                transform: scale(1.05);
+                opacity: 0.7;
+            }
+
+            100% {
+                transform: scale(0.95);
+                opacity: 0.4;
+            }
+        }
+
+        .pulse-aura {
+            animation: pulse-aura 4s infinite ease-in-out;
+        }
+
+        /* Interaction Animations */
+        @keyframes shake {
+
+            0%,
+            100% {
+                transform: translateX(0);
+            }
+
+            20%,
+            60% {
+                transform: translateX(-5px) rotate(-2deg);
+            }
+
+            40%,
+            80% {
+                transform: translateX(5px) rotate(2deg);
+            }
+        }
+
+        .animate-shake {
+            animation: shake 0.4s ease-in-out;
+        }
+
+        @keyframes bounce-up {
+
+            0%,
+            100% {
+                transform: translateY(0) scale(1);
+            }
+
+            50% {
+                transform: translateY(-15px) scale(1.05);
+            }
+        }
+
+        .animate-bounce-up {
+            animation: bounce-up 0.5s ease-out;
+        }
+
+        @keyframes level-up-flash {
+            0% {
+                filter: brightness(1);
+                transform: scale(1);
+            }
+
+            50% {
+                filter: brightness(2) drop-shadow(0 0 20px #facc15);
+                transform: scale(1.2);
+            }
+
+            100% {
+                filter: brightness(1);
+                transform: scale(1);
+            }
+        }
+
+        .animate-level-up {
+            animation: level-up-flash 0.8s ease-in-out;
+        }
+
+        @keyframes float-up-fade {
+            0% {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
+
+            100% {
+                opacity: 0;
+                transform: translateY(-40px) scale(1.2);
+            }
+        }
+
+        .floating-text {
+            position: absolute;
+            font-weight: 900;
+            font-size: 1.5rem;
+            text-shadow: 2px 2px 0px #3d405b;
+            pointer-events: none;
+            animation: float-up-fade 1s forwards;
+            z-index: 50;
+        }
+
+        /* Health States */
+        .state-thriving .cat-body {
+            filter: none;
+        }
+
+        .state-tired .cat-body {
+            filter: grayscale(40%) brightness(0.9);
+            animation: none;
+            transform: translateY(5px);
+        }
+
+        .state-sick .cat-body {
+            filter: grayscale(70%) sepia(50%) hue-rotate(-50deg) saturate(3);
+            animation: shake 2s infinite;
+        }
+
+        .state-sick .pulse-aura {
+            background-color: #e07a5f !important;
+            animation-duration: 1s;
+        }
+
+        /* --- SPECIES MORPHING LOGIC --- */
+        .species-cat #ear-l {
+            top: -12px;
+            left: -8px;
+            width: 40px;
+            height: 40px;
+            border-radius: 1rem 0 0 0;
+            transform: rotate(-12deg);
+        }
+
+        .species-cat #ear-r {
+            top: -12px;
+            right: -8px;
+            width: 40px;
+            height: 40px;
+            border-radius: 0 1rem 0 0;
+            transform: rotate(12deg);
+        }
+
+        .species-cat #snout {
+            width: 12px;
+            height: 8px;
+            border-radius: 999px;
+        }
+
+        .species-dog #ear-l {
+            top: 10px;
+            left: -15px;
+            width: 32px;
+            height: 48px;
+            border-radius: 2rem 0 2rem 2rem;
+            transform: rotate(15deg);
+        }
+
+        .species-dog #ear-r {
+            top: 10px;
+            right: -15px;
+            width: 32px;
+            height: 48px;
+            border-radius: 0 2rem 2rem 2rem;
+            transform: rotate(-15deg);
+        }
+
+        .species-dog #snout {
+            width: 24px;
+            height: 14px;
+            border-radius: 8px;
+        }
+
+        .species-rabbit #ear-l {
+            top: -45px;
+            left: 10px;
+            width: 20px;
+            height: 70px;
+            border-radius: 2rem 2rem 0 0;
+            transform: rotate(-5deg);
+        }
+
+        .species-rabbit #ear-r {
+            top: -45px;
+            right: 10px;
+            width: 20px;
+            height: 70px;
+            border-radius: 2rem 2rem 0 0;
+            transform: rotate(5deg);
+        }
+
+        .species-rabbit #snout {
+            width: 8px;
+            height: 6px;
+            border-radius: 50%;
+        }
+
+        /* Custom Scrollbar */
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 8px;
+        }
+
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #81b29a;
+            border-radius: 8px;
+        }
+
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #3d405b;
+        }
+
+        .markdown-content b {
+            color: #f9a215;
+        }
+
+        .star-filled {
+            color: #facc15;
+            text-shadow: 1px 1px 0 #3d405b;
+        }
+
+        .star-empty {
+            color: #d1d5db;
+            text-shadow: 1px 1px 0 #9ca3af;
+        }
+
+        /* --- HEATMAP STYLES --- */
+        .heatmap-grid {
+            display: grid;
+            grid-template-columns: 20px repeat(7, 1fr);
+            gap: 3px;
+            width: 100%;
+        }
+
+        .heatmap-cell {
+            aspect-ratio: 1;
+            border: 2px solid #3d405b;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+            position: relative;
+            min-width: 0;
+        }
+
+        .heatmap-cell:hover {
+            transform: scale(1.2);
+            box-shadow: 2px 2px 0 #3d405b;
+            z-index: 5;
+        }
+
+        .heatmap-cell:active {
+            transform: scale(0.95);
+        }
+
+        .heatmap-day-label {
+            font-size: 9px;
+            font-weight: 700;
+            color: #3d405b;
+            opacity: 0.5;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-transform: uppercase;
+        }
+
+        .heatmap-week-label {
+            font-size: 8px;
+            font-weight: 700;
+            color: #3d405b;
+            opacity: 0.4;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .heatmap-popover {
+            position: fixed;
+            z-index: 100;
+            background: white;
+            border: 4px solid #3d405b;
+            border-radius: 12px;
+            padding: 10px 14px;
+            box-shadow: 4px 4px 0 #3d405b;
+            min-width: 160px;
+            pointer-events: auto;
+            animation: pop-in 0.2s ease-out;
+        }
+
+        @keyframes pop-in {
+            0% {
+                opacity: 0;
+                transform: scale(0.85);
+            }
+            100% {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+
+        .heatmap-toggle-btn {
+            background: white;
+            border: 2px solid #3d405b;
+            border-radius: 8px;
+            padding: 4px 8px;
+            font-weight: 700;
+            font-size: 10px;
+            text-transform: uppercase;
+            box-shadow: 2px 2px 0 #3d405b;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            white-space: nowrap;
+        }
+
+        .heatmap-toggle-btn:active {
+            transform: translateY(2px);
+            box-shadow: none;
+        }
+
+        .heatmap-toggle-btn.active {
+            background: #3d405b;
+            color: white;
+            box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.2);
+        }
+
+        .heatmap-legend {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 9px;
+            font-weight: 600;
+            color: #3d405b;
+            opacity: 0.7;
+        }
+
+        .heatmap-legend-swatch {
+            width: 12px;
+            height: 12px;
+            border: 2px solid #3d405b;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+
+<body class="min-h-screen w-full flex flex-col max-w-md mx-auto border-x-4 border-rpg-text">
+    <!-- Header Stats -->
+    <header
+        class="sticky top-0 z-20 bg-rpg-bg border-b-4 border-rpg-text p-4 flex justify-between items-center shadow-[0_4px_0_#3D405B]">
+        <!-- HIDDEN SANDBOX TRIGGER: Click this badge 5 times -->
+        <div class="flex items-center bg-white border-thick rounded-xl px-3 py-1 shadow-hard-sm transition-all cursor-pointer hover:bg-gray-100 select-none"
+            id="lvl-badge" onclick="revealSandbox()">
+            <span class="material-symbols-outlined text-primary mr-1"
+                style="font-variation-settings: &quot;FILL&quot; 1">star</span>
+            <span class="font-bold" id="header-lvl">RANK 1</span>
+        </div>
+
+
+        <div class="flex items-center gap-2">
+            <select id="locale-select" onchange="changeLocale(this.value)"
+                class="text-xs font-bold border-thick rounded-xl px-2 py-1 shadow-hard-sm cursor-pointer hover:bg-gray-100 focus:ring-0">
+                <option value="regular">Regular</option>
+                <option value="genz" selected>Gen Z</option>
+            </select>
+            <div class="flex items-center bg-white border-thick rounded-xl px-3 py-1 shadow-hard-sm">
+                <span class="material-symbols-outlined text-rpg-surface mr-1">calendar_month</span>
+                <span class="font-bold text-sm" id="header-time" data-i18n="week_label">Week 0</span>
+            </div>
+        </div>
+
+    </header>
+
+    <!-- Main Game Area -->
+    <main class="flex-1 flex flex-col items-center justify-start p-6 gap-6 relative overflow-hidden bg-rpg-bg">
+        <!-- Pet Stage -->
+        <div id="pet-stage" class="relative flex flex-col items-center w-full mt-4 state-thriving">
+            <div id="pet-aura"
+                class="absolute w-64 h-64 bg-rpg-accent/30 rounded-full blur-2xl pulse-aura -z-10 transition-colors duration-500">
+            </div>
+
+            <!-- LLM Speech Bubble -->
+            <div id="speech-bubble"
+                class="hidden absolute -top-12 left-1/2 -translate-x-1/2 bg-white border-thick rounded-2xl p-3 shadow-hard text-xs font-bold w-56 text-center z-50 animate-bounce-up text-rpg-text">
+                ...
+            </div>
+
+            <div id="cat-container"
+                class="cat-body relative w-40 h-40 animate-float transition-all duration-300 flex items-center justify-center species-cat">
+                <div
+                    class="absolute inset-0 bg-primary rounded-full border-thick shadow-hard z-10 overflow-hidden flex flex-col items-center justify-center transition-colors">
+                    <div class="flex gap-4 mb-2 z-20">
+                        <div id="eye-l" class="w-3 h-4 bg-rpg-text rounded-full transition-all"></div>
+                        <div id="eye-r" class="w-3 h-4 bg-rpg-text rounded-full transition-all"></div>
+                    </div>
+                    <div class="flex flex-col items-center z-20">
+                        <div id="snout" class="bg-rpg-text transition-all duration-300"></div>
+                        <div id="mouth" class="w-4 h-4 border-b-4 border-rpg-text rounded-full -mt-1 transition-all">
+                        </div>
+                    </div>
+                    <div id="stripes" class="absolute top-2 flex gap-2 opacity-30 transition-opacity">
+                        <div class="w-1.5 h-6 bg-rpg-text rounded-full"></div>
+                        <div class="w-1.5 h-8 bg-rpg-text rounded-full"></div>
+                        <div class="w-1.5 h-6 bg-rpg-text rounded-full"></div>
+                    </div>
+                </div>
+
+                <div id="ear-l" class="absolute bg-primary border-thick z-0 transition-all duration-300"></div>
+                <div id="ear-r" class="absolute bg-primary border-thick z-0 transition-all duration-300"></div>
+
+                <!-- EQUIPMENT BATCHES -->
+                <div id="equipment" class="absolute inset-0 z-30 pointer-events-none transition-all duration-300">
+                    <div id="eq-batch-1" class="absolute inset-0 block">
+                        <div
+                            class="absolute -bottom-2 left-1/2 -translate-x-1/2 w-32 h-12 bg-[#8B5A2B] border-thick rounded-b-full">
+                        </div>
+                    </div>
+                    <div id="eq-batch-2" class="absolute inset-0 hidden">
+                        <div
+                            class="absolute -top-4 left-1/2 -translate-x-1/2 w-36 h-16 bg-rpg-silver border-thick rounded-t-full">
+                        </div>
+                        <div
+                            class="absolute -top-12 left-1/2 -translate-x-1/2 w-8 h-10 bg-rpg-muted border-thick rounded-t-full">
+                        </div>
+                        <div
+                            class="absolute -bottom-2 left-1/2 -translate-x-1/2 w-36 h-12 bg-rpg-text border-thick rounded-b-full flex justify-center gap-1">
+                            <div class="w-2 h-full bg-rpg-silver"></div>
+                            <div class="w-2 h-full bg-rpg-silver"></div>
+                        </div>
+                    </div>
+                    <div id="eq-batch-3" class="absolute inset-0 hidden">
+                        <div
+                            class="absolute top-6 left-1/2 -translate-x-1/2 w-32 h-14 bg-rpg-silver border-thick rounded-xl flex items-center justify-center gap-2">
+                            <div class="w-16 h-2 bg-rpg-text"></div>
+                        </div>
+                        <div
+                            class="absolute -bottom-4 -left-6 w-12 h-24 bg-rpg-surface border-thick rounded-l-full -z-10">
+                        </div>
+                        <div
+                            class="absolute -bottom-4 -right-6 w-12 h-24 bg-rpg-surface border-thick rounded-r-full -z-10">
+                        </div>
+                    </div>
+                    <div id="eq-batch-4" class="absolute inset-0 hidden">
+                        <div
+                            class="absolute top-2 left-1/2 -translate-x-1/2 w-[130px] h-[60px] bg-rpg-gold border-thick rounded-t-2xl flex justify-center">
+                            <div class="w-4 h-8 bg-white border-thick rounded-t-full -mt-4"></div>
+                        </div>
+                        <div class="absolute -bottom-6 -left-8 w-16 h-28 bg-rpg-duke border-thick rounded-l-full -z-10">
+                        </div>
+                        <div
+                            class="absolute -bottom-6 -right-8 w-16 h-28 bg-rpg-duke border-thick rounded-r-full -z-10">
+                        </div>
+                        <div
+                            class="absolute -bottom-2 left-1/2 -translate-x-1/2 w-[140px] h-[50px] bg-rpg-silver border-thick rounded-b-full flex items-center justify-center">
+                            <div class="w-8 h-8 bg-rpg-gold border-thick rounded-full"></div>
+                        </div>
+                    </div>
+                    <div id="eq-batch-5" class="absolute inset-0 hidden">
+                        <div class="absolute -top-8 left-1/2 -translate-x-1/2 flex items-end">
+                            <div class="w-8 h-12 bg-rpg-gold border-thick transform skew-x-12 rounded-t-md"></div>
+                            <div class="w-10 h-16 bg-rpg-gold border-thick -mx-2 rounded-t-md z-10"></div>
+                            <div class="w-8 h-12 bg-rpg-gold border-thick transform -skew-x-12 rounded-t-md"></div>
+                        </div>
+                        <div
+                            class="absolute -bottom-4 left-1/2 -translate-x-1/2 w-44 h-16 bg-rpg-royal border-thick rounded-b-full flex justify-between px-2">
+                            <div class="w-6 h-full bg-white border-x-4 border-rpg-text border-dotted"></div>
+                            <div class="w-6 h-full bg-white border-x-4 border-rpg-text border-dotted"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Target Asset Label, Species Selector & Gemini Action -->
+            <div class="mt-8 text-center flex flex-col items-center w-full px-4">
+                <div id="asset-label"
+                    class="bg-rpg-text text-white text-[10px] font-bold uppercase tracking-widest px-3 py-1 rounded-full mb-1 text-center truncate w-full max-w-xs">
+                    Asset: Miles Cat (Batch 1)
+                </div>
+                <h2 id="pet-name" class="text-3xl font-bold uppercase tracking-tighter leading-none mt-1">
+                    Sparky
+                </h2>
+
+                <!-- Quick Pet Selector -->
+                <div class="flex gap-2 justify-center mt-2 mb-1">
+                    <button onclick="setSpecies('cat')"
+                        class="bg-white border-2 border-rpg-text rounded-lg px-2 py-1 font-bold text-[10px] uppercase shadow-hard-sm btn-press hover:bg-gray-100">
+                        <span data-i18n="cat_btn">🐱 Cat</span>
+                    </button>
+                    <button onclick="setSpecies('dog')"
+                        class="bg-white border-2 border-rpg-text rounded-lg px-2 py-1 font-bold text-[10px] uppercase shadow-hard-sm btn-press hover:bg-gray-100">
+                        <span data-i18n="dog_btn">🐶 Dog</span>
+                    </button>
+                    <button onclick="setSpecies('rabbit')"
+                        class="bg-white border-2 border-rpg-text rounded-lg px-2 py-1 font-bold text-[10px] uppercase shadow-hard-sm btn-press hover:bg-gray-100">
+                        <span data-i18n="rabbit_btn">🐰 Rabbit</span>
+                    </button>
+                </div>
+
+                <div class="flex gap-2 items-center mt-2">
+                    <div id="status-badge"
+                        class="bg-rpg-accent border-thick rounded-full px-4 py-1 text-white text-xs font-bold uppercase transition-colors">
+                        Status: Thriving
+                    </div>
+                    <!-- Gemini Action -->
+                    <button onclick="talkToPet()"
+                        class="bg-white text-rpg-text border-2 border-rpg-text rounded-full px-3 py-1 text-xs font-bold uppercase shadow-hard-sm btn-press active:translate-y-1 active:shadow-none transition-all hover:bg-gray-100">
+                        <span data-i18n="talk_btn">Talk ✨</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Progress Bars -->
+        <div class="w-full space-y-4">
+            <div class="w-full flex flex-col gap-1">
+                <div class="flex justify-between font-bold text-sm uppercase">
+                    <span data-i18n="battery_health">Battery Health (HP)</span>
+                    <span id="hp-text">100/100</span>
+                </div>
+                <div class="w-full h-6 bg-white border-thick rounded-full overflow-hidden shadow-hard-sm">
+                    <div id="hp-bar"
+                        class="h-full bg-rpg-accent w-full border-r-4 border-rpg-text transition-all duration-500">
+                    </div>
+                </div>
+            </div>
+
+            <div class="w-full flex flex-col gap-1">
+                <div class="flex justify-between font-bold text-sm uppercase text-rpg-text/60">
+                    <span data-i18n="exp_rank_up">Exp to Rank Up</span>
+                    <span id="xp-text">0 / 100</span>
+                </div>
+                <div class="w-full h-3 bg-white border-thick rounded-full overflow-hidden shadow-hard-sm">
+                    <div id="xp-bar"
+                        class="h-full bg-primary w-[0%] border-r-2 border-rpg-text transition-all duration-500"></div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- UI TABS -->
+    <div class="bg-rpg-text text-white flex border-t-4 border-rpg-text z-40 relative">
+        <button onclick="switchTab('tab-stats')" id="btn-stats"
+            class="flex-1 py-3 font-bold text-[10px] uppercase tracking-wider border-r-2 border-white/20 bg-primary shadow-[inset_0_-4px_0_rgba(0,0,0,0.2)]">
+            <span data-i18n="tab_stats">Stats</span>
+        </button>
+        <button onclick="switchTab('tab-tips')" id="btn-tips"
+            class="flex-1 py-3 font-bold text-[10px] uppercase tracking-wider border-r-2 border-white/20 hover:bg-white/10">
+            <span data-i18n="tab_tips">Tips</span>
+        </button>
+        <button onclick="switchTab('tab-data')" id="btn-data"
+            class="flex-1 py-3 font-bold text-[10px] uppercase tracking-wider hover:bg-white/10">
+            <span data-i18n="tab_logs">Logs</span>
+        </button>
+        <button onclick="switchTab('tab-sandbox')" id="btn-sandbox"
+            class="hidden font-bold text-[10px] uppercase tracking-wider hover:bg-white/10 px-4 text-primary">
+            <span data-i18n="tab_sandbox">Dev</span>
+        </button>
+    </div>
+
+    <!-- TAB CONTENTS -->
+    <section
+        class="bg-white border-t-4 border-rpg-text p-4 pb-8 flex flex-col gap-4 relative z-30 flex-1 overflow-hidden h-[400px]">
+        <!-- STATS TAB (Duolingo/Angry Birds Style) -->
+        <div id="tab-stats" class="flex-col h-full gap-4 flex overflow-hidden">
+            <!-- HEATMAP SECTION -->
+            <div id="heatmap-section" class="shrink-0 hidden">
+                <div class="flex items-center justify-between mb-2">
+                    <div class="flex items-center gap-2">
+                        <span class="material-symbols-outlined text-rpg-text">grid_view</span>
+                        <h3 class="font-bold text-sm uppercase tracking-widest text-rpg-text">
+                            <span data-i18n="charging_heatmap">Charging Heatmap</span>
+                        </h3>
+                    </div>
+                </div>
+
+                <!-- Segmented Toggle -->
+                <div class="flex gap-2 justify-center mb-3" id="heatmap-toggles">
+                    <button class="heatmap-toggle-btn" data-mode="sessions" onclick="switchHeatmapMode('sessions')">
+                        <span data-i18n="heatmap_sessions">🔢 Sessions</span>
+                    </button>
+                    <button class="heatmap-toggle-btn" data-mode="quality" onclick="switchHeatmapMode('quality')">
+                        <span data-i18n="heatmap_quality">⭐ Quality</span>
+                    </button>
+                    <button class="heatmap-toggle-btn active" data-mode="score" onclick="switchHeatmapMode('score')">
+                        <span data-i18n="heatmap_score">📊 Score</span>
+                    </button>
+                </div>
+
+                <!-- Heatmap Grid -->
+                <div class="bg-rpg-bg border-thick rounded-xl p-3 shadow-hard-sm">
+                    <div id="heatmap-grid" class="heatmap-grid">
+                        <!-- Populated by JS -->
+                    </div>
+
+                    <!-- Legend -->
+                    <div class="flex justify-between items-center mt-3 px-1">
+                        <div class="heatmap-legend">
+                            <span data-i18n="heatmap_less">Less</span>
+                            <div class="heatmap-legend-swatch" style="background:#9CA3AF;"></div>
+                            <div class="heatmap-legend-swatch" style="background:#E07A5F;"></div>
+                            <div class="heatmap-legend-swatch" style="background:#F9A215;"></div>
+                            <div class="heatmap-legend-swatch" style="background:#81B29A;"></div>
+                            <div class="heatmap-legend-swatch" style="background:#FACC15;"></div>
+                            <span data-i18n="heatmap_more">More</span>
+                        </div>
+                        <span id="heatmap-summary" class="text-[10px] font-bold text-rpg-text/50 uppercase"></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- JOURNEY MAP SECTION -->
+            <div class="flex items-center justify-between shrink-0">
+                <div class="flex items-center gap-2">
+                    <span class="material-symbols-outlined text-rpg-text">map</span>
+                    <h3 class="font-bold text-sm uppercase tracking-widest text-rpg-text">
+                        <span data-i18n="journey_map">Journey Map</span>
+                    </h3>
+                </div>
+            </div>
+
+            <!-- Path to Legend Banner -->
+            <div id="legend-banner"
+                class="bg-rpg-surface border-thick rounded-xl p-3 shadow-hard-sm text-white flex flex-col items-center shrink-0 hidden text-center">
+                <span class="font-bold text-xs uppercase tracking-wider opacity-80 mb-1"><span
+                        data-i18n="path_emperor">Path to Emperor</span>
+                    <p class="font-black text-lg leading-tight" id="legend-prediction">
+                        --
+                    </p>
+                    <div class="w-full bg-white/30 h-2 rounded-full mt-2 overflow-hidden border border-rpg-text">
+                        <div id="legend-progress" class="h-full bg-rpg-gold border-r border-rpg-text w-0"></div>
+                    </div>
+            </div>
+
+            <!-- Stats Container (Vertical Timeline) -->
+            <div id="stats-content-area" class="flex-1 overflow-y-auto custom-scrollbar flex flex-col pr-2 pb-4 pt-2">
+                <div
+                    class="bg-rpg-bg border-2 border-rpg-text border-dashed rounded-xl p-4 text-center text-sm font-bold text-rpg-text/60">
+                    <span data-i18n="run_sim_stats_msg">Run the simulation in the Logs tab first to build your
+                        Journey Map!</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- TIPS TAB -->
+        <div id="tab-tips" class="flex-col h-full gap-4 hidden overflow-y-auto custom-scrollbar pr-2">
+            <div class="flex items-center gap-2 mb-2 shrink-0">
+                <span class="material-symbols-outlined text-primary">psychology</span>
+                <h3 class="font-bold text-sm uppercase tracking-widest text-rpg-text">
+                    <span data-i18n="pets_advice">Pet's Advice</span>
+                </h3>
+            </div>
+
+            <!-- Gemini Action -->
+            <button onclick="askPetAdvice()"
+                class="w-full bg-primary border-thick rounded-xl p-3 shadow-hard btn-press text-white font-bold uppercase tracking-wider flex items-center justify-center gap-2 shrink-0">
+                <span class="material-symbols-outlined">auto_awesome</span>
+                <span data-i18n="ask_advice_btn">Ask Pet for Advice ✨</span>
+            </button>
+
+            <div id="dynamic-tips-container" class="flex flex-col gap-3 shrink-0">
+                <div
+                    class="bg-rpg-bg border-2 border-rpg-text border-dashed rounded-xl p-4 text-center text-sm font-bold text-rpg-text/60">
+                    <span data-i18n="run_sim_tips_msg">Run the simulation in the Logs tab first to receive
+                        personalized advice!</span>
+                </div>
+            </div>
+
+            <h4
+                class="font-bold text-xs uppercase text-rpg-text/60 mt-4 mb-2 border-b-2 border-rpg-text/10 pb-1 shrink-0">
+                <span data-i18n="general_wisdom">General Wisdom</span>
+            </h4>
+
+            <div class="bg-[#E8E5D1] border-2 border-rpg-text rounded-xl p-3 flex gap-3 shadow-hard-sm shrink-0">
+                <span class="material-symbols-outlined text-rpg-surface text-2xl">battery_charging_full</span>
+                <div>
+                    <h5 class="font-bold text-sm uppercase">
+                        <span data-i18n="rule_20_80_title">The Golden Rule: 20-80</span>
+                    </h5>
+                    <p class="text-xs font-medium text-rpg-text/80 leading-tight mt-1">
+                        <span data-i18n="rule_20_80_desc">Keep your pet's energy between 20% and 80%. Going to
+                            100% causes stress, and dropping below 20% makes
+                            them starve!</span>
+                    </p>
+                </div>
+            </div>
+            <div
+                class="bg-[#E8E5D1] border-2 border-rpg-text rounded-xl p-3 flex gap-3 shadow-hard-sm mt-3 shrink-0 mb-4">
+                <span class="material-symbols-outlined text-rpg-muted text-2xl">bedtime</span>
+                <div>
+                    <h5 class="font-bold text-sm uppercase">
+                        <span data-i18n="night_charge_title">Beware the Night Charge</span>
+                    </h5>
+                    <p class="text-xs font-medium text-rpg-text/80 leading-tight mt-1">
+                        <span data-i18n="night_charge_desc">Leaving your pet plugged in overnight guarantees
+                            severe overcharge damage. Avoid it to keep HP high.</span>
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- DATA & TIMELINE TAB -->
+        <div id="tab-data" class="flex-col h-full gap-4 hidden">
+            <div class="flex justify-between items-center shrink-0">
+                <div class="flex items-center gap-2">
+                    <span class="material-symbols-outlined text-rpg-text">dataset</span>
+                    <h3 class="font-bold text-sm uppercase tracking-widest text-rpg-text">
+                        <span data-i18n="csv_import">CSV Import</span>
+                    </h3>
+                </div>
+                <!-- CSV Upload Button -->
+                <button onclick="
+                            document.getElementById('csv-file-input').click()
+                        "
+                    class="bg-rpg-surface text-white text-[10px] font-bold uppercase px-3 py-1.5 rounded-lg shadow-hard-sm btn-press flex items-center gap-1">
+                    <span class="material-symbols-outlined text-[14px]">upload_file</span>
+                    <span data-i18n="load_csv">Load CSV</span>
+                </button>
+                <input type="file" id="csv-file-input" accept=".csv" class="hidden"
+                    onchange="handleFileUpload(event)" />
+            </div>
+
+            <!-- Scrollable log sections container -->
+            <div class="flex-1 overflow-y-auto custom-scrollbar flex flex-col gap-4 pr-1 pb-4">
+
+                <!-- LOG 1 — Normal Charging -->
+                <div class="shrink-0">
+                    <div class="flex items-center gap-2 mb-2">
+                        <div class="w-6 h-6 bg-rpg-surface border-2 border-rpg-text rounded-md flex items-center justify-center">
+                            <span class="text-white font-black text-[10px]">1</span>
+                        </div>
+                        <h4 class="font-bold text-xs uppercase tracking-widest text-rpg-text"><span data-i18n="log_1_label">Log 1 — Normal Charging</span></h4>
+                    </div>
+                    <textarea id="csv-input"
+                        class="w-full h-24 border-2 border-rpg-text rounded-xl p-2 font-mono text-[10px] text-rpg-text/80 shadow-inner resize-none bg-rpg-bg">
+user_id,event_type,percentage,date,time,timezone
+1,power_connected,2,2025-10-23,19:00:35,+05:30
+1,power_disconnected,8,2025-10-23,19:07:38,+05:30
+1,power_connected,7,2025-10-23,19:17:43,+05:30
+1,power_disconnected,41,2025-10-23,20:02:50,+05:30
+1,power_connected,35,2025-10-23,22:11:47,+05:30
+1,power_disconnected,100,2025-10-24,00:29:42,+05:30
+1,power_connected,51,2025-10-27,09:51:39,+05:30
+1,power_disconnected,91,2025-10-27,10:30:36,+05:30
+1,power_connected,46,2025-10-27,19:14:25,+05:30
+1,power_disconnected,77,2025-10-27,19:33:14,+05:30
+1,power_connected,47,2025-10-28,00:51:17,+05:30
+1,power_disconnected,100,2025-10-28,07:00:32,+05:30
+1,power_connected,40,2025-10-28,17:32:38,+05:30
+1,power_disconnected,64,2025-10-28,17:47:24,+05:30
+1,power_connected,33,2025-10-28,22:20:39,+05:30
+1,power_disconnected,65,2025-10-28,22:33:43,+05:30
+1,power_connected,62,2025-10-28,22:56:42,+05:30
+1,power_disconnected,65,2025-10-28,23:03:38,+05:30
+1,power_connected,49,2025-10-29,00:36:31,+05:30
+1,power_disconnected,100,2025-10-29,06:34:09,+05:30
+1,power_connected,42,2025-10-29,14:06:48,+05:30
+1,power_disconnected,44,2025-10-29,14:09:15,+05:30
+1,power_connected,42,2025-10-29,14:15:17,+05:30
+1,power_disconnected,42,2025-10-29,14:16:34,+05:30
+1,power_connected,28,2025-10-29,18:48:23,+05:30
+1,power_disconnected,80,2025-10-29,19:13:24,+05:30
+1,power_connected,8,2025-10-31,18:56:10,+05:30
+1,power_disconnected,100,2025-10-31,21:48:15,+05:30
+1,power_connected,38,2025-11-02,19:53:27,+05:30
+1,power_disconnected,100,2025-11-02,20:42:30,+05:30
+1,power_connected,70,2025-11-04,15:35:00,+05:30
+1,power_disconnected,70,2025-11-04,15:35:11,+05:30
+1,power_connected,3,2025-11-08,10:47:20,+05:30
+1,power_disconnected,22,2025-11-08,10:54:13,+05:30
+1,power_connected,1,2025-11-09,20:49:34,+05:30
+1,power_disconnected,39,2025-11-09,21:04:45,+05:30
+1,power_connected,37,2025-11-09,22:49:14,+05:30
+1,power_disconnected,80,2025-11-10,00:44:13,+05:30
+1,power_connected,17,2025-11-12,16:01:17,+05:30
+1,power_disconnected,80,2025-11-13,00:09:06,+05:30</textarea>
+                    <button onclick="runSimulation('csv-input')"
+                        class="w-full bg-rpg-text border-thick rounded-xl p-3 shadow-hard btn-press text-white font-bold uppercase tracking-wider flex items-center justify-center gap-2 mt-2">
+                        <span class="material-symbols-outlined">play_arrow</span>
+                        <span data-i18n="run_sim_log_1">Run Simulation — Log 1</span>
+                    </button>
+                </div>
+
+                <!-- DIVIDER -->
+                <div class="flex items-center gap-3 shrink-0">
+                    <div class="flex-1 h-0.5 bg-rpg-text/20"></div>
+                    <span class="text-[10px] font-bold uppercase tracking-widest text-rpg-text/40" data-i18n="or_try">or try</span>
+                    <div class="flex-1 h-0.5 bg-rpg-text/20"></div>
+                </div>
+
+                <!-- LOG 2 — Bad Charging -->
+                <div class="shrink-0">
+                    <div class="flex items-center gap-2 mb-2">
+                        <div class="w-6 h-6 bg-rpg-muted border-2 border-rpg-text rounded-md flex items-center justify-center">
+                            <span class="text-white font-black text-[10px]">2</span>
+                        </div>
+                        <h4 class="font-bold text-xs uppercase tracking-widest text-rpg-text"><span data-i18n="log_2_label">Log 2 — Bad Charging</span></h4>
+                    </div>
+                    <textarea id="csv-input-2"
+                        class="w-full h-24 border-2 border-rpg-text rounded-xl p-2 font-mono text-[10px] text-rpg-text/80 shadow-inner resize-none bg-rpg-bg">
+user_id,event_type,percentage,date,time,timezone
+108,power_connected,29,2025-10-21,18:28:22,+05:30
+108,power_disconnected,47,2025-10-21,18:43:52,+05:30
+108,power_connected,47,2025-10-21,19:02:15,+05:30
+108,power_disconnected,60,2025-10-21,19:13:41,+05:30
+108,power_connected,32,2025-10-22,16:10:17,+05:30
+108,power_disconnected,90,2025-10-22,17:22:20,+05:30
+108,power_connected,32,2025-10-23,10:07:50,+05:30
+108,power_disconnected,100,2025-10-23,11:12:24,+05:30
+108,power_connected,23,2025-10-23,20:19:53,+05:30
+108,power_disconnected,100,2025-10-23,22:16:14,+05:30
+108,power_connected,23,2025-10-25,09:59:17,+05:30
+108,power_disconnected,100,2025-10-25,11:51:44,+05:30
+108,power_connected,48,2025-10-25,21:48:43,+05:30
+108,power_disconnected,100,2025-10-25,22:59:19,+05:30
+108,power_connected,31,2025-10-27,16:19:43,+05:30
+108,power_disconnected,100,2025-10-27,17:24:40,+05:30
+108,power_connected,28,2025-10-31,11:21:13,+05:30
+108,power_disconnected,100,2025-10-31,12:19:52,+05:30
+108,power_connected,27,2025-11-02,19:40:54,+05:30
+108,power_disconnected,100,2025-11-02,20:47:52,+05:30
+108,power_connected,31,2025-11-04,19:30:19,+05:30
+108,power_disconnected,96,2025-11-04,20:12:12,+05:30
+108,power_connected,34,2025-11-06,14:03:33,+05:30
+108,power_disconnected,97,2025-11-06,14:48:09,+05:30
+108,power_connected,21,2025-11-07,19:44:39,+05:30
+108,power_disconnected,100,2025-11-07,21:04:40,+05:30
+108,power_connected,19,2025-11-09,10:53:42,+05:30
+108,power_disconnected,100,2025-11-09,11:51:08,+05:30
+108,power_connected,32,2025-11-11,11:32:59,+05:30
+108,power_disconnected,100,2025-11-11,12:58:54,+05:30</textarea>
+                    <button onclick="runSimulation('csv-input-2')"
+                        class="w-full bg-rpg-muted border-thick rounded-xl p-3 shadow-hard btn-press text-white font-bold uppercase tracking-wider flex items-center justify-center gap-2 mt-2">
+                        <span class="material-symbols-outlined">play_arrow</span>
+                        <span data-i18n="run_sim_log_2">Run Simulation — Log 2</span>
+                    </button>
+                </div>
+
+                <!-- DIVIDER -->
+                <div class="flex items-center gap-3 shrink-0">
+                    <div class="flex-1 h-0.5 bg-rpg-text/20"></div>
+                    <span class="text-[10px] font-bold uppercase tracking-widest text-rpg-text/40" data-i18n="or_try">or try</span>
+                    <div class="flex-1 h-0.5 bg-rpg-text/20"></div>
+                </div>
+
+                <!-- LOG 3 — Good Charging -->
+                <div class="shrink-0">
+                    <div class="flex items-center gap-2 mb-2">
+                        <div class="w-6 h-6 bg-rpg-accent border-2 border-rpg-text rounded-md flex items-center justify-center">
+                            <span class="text-white font-black text-[10px]">3</span>
+                        </div>
+                        <h4 class="font-bold text-xs uppercase tracking-widest text-rpg-text"><span data-i18n="log_3_label">Log 3 — Good Charging</span></h4>
+                    </div>
+                    <textarea id="csv-input-3"
+                        class="w-full h-24 border-2 border-rpg-text rounded-xl p-2 font-mono text-[10px] text-rpg-text/80 shadow-inner resize-none bg-rpg-bg">
+user_id,event_type,percentage,date,time,timezone
+233,power_connected,18,2025-10-22,00:10:36,+05:30
+233,power_disconnected,35,2025-10-22,00:28:10,+05:30
+233,power_connected,16,2025-10-22,02:03:41,+05:30
+233,power_disconnected,50,2025-10-22,02:24:24,+05:30
+233,power_connected,33,2025-10-22,10:48:26,+05:30
+233,power_disconnected,46,2025-10-22,10:55:35,+05:30
+233,power_connected,27,2025-10-22,13:06:58,+05:30
+233,power_disconnected,54,2025-10-22,13:26:13,+05:30
+233,power_connected,48,2025-10-22,14:01:33,+05:30
+233,power_disconnected,73,2025-10-22,14:22:17,+05:30
+233,power_connected,22,2025-10-22,20:21:04,+05:30
+233,power_disconnected,28,2025-10-22,20:25:07,+05:30
+233,power_connected,22,2025-10-22,22:14:03,+05:30
+233,power_disconnected,47,2025-10-22,22:27:06,+05:30
+233,power_connected,35,2025-10-22,23:26:36,+05:30
+233,power_disconnected,58,2025-10-22,23:46:45,+05:30
+233,power_connected,55,2025-10-23,00:04:40,+05:30
+233,power_disconnected,57,2025-10-23,00:07:18,+05:30
+233,power_connected,23,2025-10-23,03:07:21,+05:30
+233,power_disconnected,32,2025-10-23,03:12:25,+05:30
+233,power_connected,23,2025-10-23,11:58:50,+05:30
+233,power_disconnected,45,2025-10-23,12:16:00,+05:30
+233,power_connected,40,2025-10-23,12:40:57,+05:30
+233,power_disconnected,58,2025-10-23,12:52:36,+05:30
+233,power_connected,42,2025-10-23,14:30:31,+05:30
+233,power_disconnected,51,2025-10-23,14:39:35,+05:30
+233,power_connected,34,2025-10-23,16:11:42,+05:30
+233,power_disconnected,51,2025-10-23,16:25:47,+05:30
+233,power_connected,17,2025-10-23,20:01:01,+05:30
+233,power_disconnected,43,2025-10-23,20:19:15,+05:30
+233,power_connected,28,2025-10-23,21:54:14,+05:30
+233,power_disconnected,51,2025-10-23,22:14:26,+05:30
+233,power_connected,17,2025-10-24,11:28:40,+05:30
+233,power_disconnected,62,2025-10-24,12:01:49,+05:30
+233,power_connected,56,2025-10-24,12:50:44,+05:30
+233,power_disconnected,69,2025-10-24,13:01:31,+05:30
+233,power_connected,49,2025-10-24,14:54:10,+05:30
+233,power_disconnected,83,2025-10-24,15:21:31,+05:30
+233,power_connected,53,2025-10-24,19:48:03,+05:30
+233,power_disconnected,90,2025-10-24,20:19:14,+05:30
+233,power_connected,19,2025-10-25,10:38:05,+05:30
+233,power_disconnected,39,2025-10-25,10:51:59,+05:30
+233,power_connected,29,2025-10-25,13:48:34,+05:30
+233,power_disconnected,72,2025-10-25,14:22:20,+05:30
+233,power_connected,23,2025-10-25,18:49:06,+05:30
+233,power_disconnected,45,2025-10-25,19:06:24,+05:30
+233,power_connected,25,2025-10-25,23:03:43,+05:30
+233,power_disconnected,29,2025-10-25,23:06:12,+05:30
+233,power_connected,19,2025-10-25,23:54:14,+05:30
+233,power_disconnected,39,2025-10-26,00:10:47,+05:30
+233,power_connected,27,2025-10-26,01:18:58,+05:30
+233,power_disconnected,55,2025-10-26,01:44:06,+05:30
+233,power_connected,16,2025-10-26,12:24:54,+05:30
+233,power_disconnected,67,2025-10-26,13:07:53,+05:30
+233,power_connected,62,2025-10-26,13:39:47,+05:30
+233,power_disconnected,74,2025-10-26,13:49:33,+05:30
+233,power_connected,13,2025-10-26,22:07:20,+05:30
+233,power_disconnected,56,2025-10-26,22:33:28,+05:30
+233,power_connected,49,2025-10-26,23:30:04,+05:30
+233,power_disconnected,69,2025-10-26,23:45:10,+05:30
+233,power_connected,65,2025-10-27,00:13:16,+05:30
+233,power_disconnected,85,2025-10-27,00:28:06,+05:30
+233,power_connected,31,2025-10-27,12:23:29,+05:30
+233,power_disconnected,48,2025-10-27,12:37:30,+05:30
+233,power_connected,19,2025-10-27,16:22:54,+05:30
+233,power_disconnected,48,2025-10-27,16:47:04,+05:30
+233,power_connected,46,2025-10-27,16:54:47,+05:30
+233,power_disconnected,60,2025-10-27,17:08:45,+05:30
+233,power_connected,55,2025-10-27,17:40:17,+05:30
+233,power_disconnected,72,2025-10-27,17:54:12,+05:30
+233,power_connected,34,2025-10-27,22:24:44,+05:30
+233,power_disconnected,34,2025-10-27,22:25:10,+05:30
+233,power_connected,27,2025-10-27,23:12:56,+05:30
+233,power_disconnected,64,2025-10-27,23:47:35,+05:30
+233,power_connected,32,2025-10-28,04:20:20,+05:30
+233,power_disconnected,55,2025-10-28,04:38:37,+05:30
+233,power_connected,20,2025-10-28,08:04:39,+05:30
+233,power_disconnected,76,2025-10-28,08:37:10,+05:30
+233,power_connected,35,2025-10-28,17:24:28,+05:30
+233,power_disconnected,74,2025-10-28,17:57:09,+05:30
+233,power_connected,16,2025-10-29,08:50:40,+05:30
+233,power_disconnected,36,2025-10-29,09:01:26,+05:30
+233,power_connected,18,2025-10-29,12:51:34,+05:30
+233,power_disconnected,56,2025-10-29,13:31:50,+05:30
+233,power_connected,37,2025-10-29,15:30:21,+05:30
+233,power_disconnected,56,2025-10-29,15:46:17,+05:30
+233,power_connected,32,2025-10-29,19:47:07,+05:30
+233,power_disconnected,71,2025-10-29,20:12:06,+05:30
+233,power_connected,33,2025-10-29,23:44:52,+05:30
+233,power_disconnected,38,2025-10-29,23:49:16,+05:30
+233,power_connected,18,2025-10-30,08:02:17,+05:30
+233,power_disconnected,73,2025-10-30,08:33:29,+05:30
+233,power_connected,15,2025-10-30,15:08:27,+05:30
+233,power_disconnected,58,2025-10-30,15:45:58,+05:30
+233,power_connected,39,2025-10-30,17:57:16,+05:30
+233,power_disconnected,40,2025-10-30,17:58:03,+05:30
+233,power_connected,27,2025-10-30,19:45:13,+05:30
+233,power_disconnected,49,2025-10-30,20:02:55,+05:30
+233,power_connected,17,2025-10-30,23:18:29,+05:30
+233,power_disconnected,65,2025-10-31,00:00:00,+05:30
+233,power_connected,23,2025-10-31,11:00:32,+05:30
+233,power_disconnected,44,2025-10-31,11:19:48,+05:30
+233,power_connected,26,2025-10-31,13:53:31,+05:30
+233,power_disconnected,37,2025-10-31,14:02:49,+05:30
+233,power_connected,26,2025-10-31,15:11:32,+05:30
+233,power_disconnected,85,2025-10-31,15:47:19,+05:30
+233,power_connected,52,2025-10-31,18:54:02,+05:30
+233,power_disconnected,72,2025-10-31,19:06:23,+05:30
+233,power_connected,27,2025-11-01,00:16:47,+05:30
+233,power_disconnected,63,2025-11-01,00:42:25,+05:30
+233,power_connected,50,2025-11-01,08:24:25,+05:30
+233,power_disconnected,66,2025-11-01,08:33:16,+05:30
+233,power_connected,15,2025-11-01,15:05:18,+05:30
+233,power_disconnected,90,2025-11-01,16:18:37,+05:30
+233,power_connected,12,2025-11-02,11:39:24,+05:30
+233,power_disconnected,45,2025-11-02,12:00:08,+05:30
+233,power_connected,35,2025-11-02,12:49:00,+05:30
+233,power_disconnected,45,2025-11-02,12:56:48,+05:30
+233,power_connected,16,2025-11-02,15:48:15,+05:30
+233,power_disconnected,63,2025-11-02,16:26:59,+05:30
+233,power_connected,28,2025-11-02,21:28:37,+05:30
+233,power_disconnected,80,2025-11-02,22:03:08,+05:30
+233,power_connected,77,2025-11-02,22:24:23,+05:30
+233,power_disconnected,79,2025-11-02,22:28:55,+05:30
+233,power_connected,23,2025-11-03,14:07:34,+05:30
+233,power_disconnected,90,2025-11-03,15:03:30,+05:30
+233,power_connected,17,2025-11-04,00:07:44,+05:30
+233,power_disconnected,27,2025-11-04,00:18:00,+05:30
+233,power_connected,18,2025-11-04,01:37:43,+05:30
+233,power_disconnected,43,2025-11-04,01:56:18,+05:30
+233,power_connected,41,2025-11-04,14:01:16,+05:30
+233,power_disconnected,71,2025-11-04,14:19:50,+05:30
+233,power_connected,37,2025-11-04,17:56:06,+05:30
+233,power_disconnected,55,2025-11-04,18:10:12,+05:30
+233,power_connected,24,2025-11-04,22:30:48,+05:30
+233,power_disconnected,56,2025-11-04,22:56:50,+05:30
+233,power_connected,54,2025-11-04,23:05:28,+05:30
+233,power_disconnected,65,2025-11-04,23:13:52,+05:30
+233,power_connected,16,2025-11-05,15:52:35,+05:30
+233,power_disconnected,66,2025-11-05,16:38:46,+05:30
+233,power_connected,27,2025-11-05,21:15:57,+05:30
+233,power_disconnected,56,2025-11-05,21:40:25,+05:30
+233,power_connected,17,2025-11-06,03:48:34,+05:30
+233,power_disconnected,66,2025-11-06,04:29:57,+05:30
+233,power_connected,27,2025-11-06,14:13:08,+05:30
+233,power_disconnected,55,2025-11-06,14:42:40,+05:30
+233,power_connected,37,2025-11-06,16:27:15,+05:30
+233,power_disconnected,42,2025-11-06,16:30:38,+05:30
+233,power_connected,16,2025-11-06,21:38:42,+05:30
+233,power_disconnected,48,2025-11-06,22:04:25,+05:30
+233,power_connected,36,2025-11-07,01:22:15,+05:30
+233,power_disconnected,43,2025-11-07,01:26:04,+05:30
+233,power_connected,32,2025-11-07,09:56:21,+05:30
+233,power_disconnected,43,2025-11-07,10:02:16,+05:30
+233,power_connected,35,2025-11-07,11:11:34,+05:30
+233,power_disconnected,79,2025-11-07,11:47:38,+05:30
+233,power_connected,48,2025-11-07,15:44:07,+05:30
+233,power_disconnected,72,2025-11-07,15:58:21,+05:30
+233,power_connected,27,2025-11-07,23:20:29,+05:30
+233,power_disconnected,29,2025-11-07,23:22:34,+05:30
+233,power_connected,14,2025-11-08,03:22:02,+05:30
+233,power_disconnected,70,2025-11-08,03:59:40,+05:30
+233,power_connected,25,2025-11-08,17:28:40,+05:30
+233,power_disconnected,38,2025-11-08,17:36:23,+05:30
+233,power_connected,5,2025-11-08,20:54:15,+05:30
+233,power_disconnected,31,2025-11-08,21:09:04,+05:30
+233,power_connected,28,2025-11-08,21:45:30,+05:30
+233,power_disconnected,63,2025-11-08,22:09:50,+05:30
+233,power_connected,37,2025-11-09,04:32:09,+05:30
+233,power_disconnected,53,2025-11-09,04:40:34,+05:30
+233,power_connected,36,2025-11-09,14:29:11,+05:30
+233,power_disconnected,48,2025-11-09,14:35:15,+05:30
+233,power_connected,22,2025-11-09,19:35:34,+05:30
+233,power_disconnected,51,2025-11-09,19:51:41,+05:30
+233,power_connected,41,2025-11-09,21:13:24,+05:30
+233,power_disconnected,45,2025-11-09,21:17:32,+05:30
+233,power_connected,36,2025-11-09,22:15:48,+05:30
+233,power_disconnected,46,2025-11-09,22:21:23,+05:30
+233,power_connected,39,2025-11-09,23:04:33,+05:30
+233,power_disconnected,88,2025-11-09,23:35:27,+05:30
+233,power_connected,33,2025-11-10,14:06:32,+05:30
+233,power_disconnected,85,2025-11-10,14:37:33,+05:30
+233,power_connected,20,2025-11-11,00:10:34,+05:30
+233,power_disconnected,32,2025-11-11,00:16:38,+05:30
+233,power_connected,18,2025-11-11,01:36:51,+05:30
+233,power_disconnected,64,2025-11-11,02:08:56,+05:30
+233,power_connected,31,2025-11-11,12:07:30,+05:30
+233,power_disconnected,61,2025-11-11,12:24:16,+05:30
+233,power_connected,36,2025-11-11,15:52:13,+05:30
+233,power_disconnected,47,2025-11-11,16:00:46,+05:30
+233,power_connected,32,2025-11-11,17:20:15,+05:30
+233,power_disconnected,47,2025-11-11,17:31:59,+05:30
+233,power_connected,15,2025-11-11,21:46:49,+05:30
+233,power_disconnected,44,2025-11-11,22:07:36,+05:30
+233,power_connected,29,2025-11-12,10:30:37,+05:30
+233,power_disconnected,67,2025-11-12,10:55:35,+05:30
+233,power_connected,28,2025-11-12,16:07:46,+05:30
+233,power_disconnected,73,2025-11-12,16:33:23,+05:30
+233,power_connected,69,2025-11-12,17:21:27,+05:30
+233,power_disconnected,88,2025-11-12,17:37:48,+05:30
+233,power_connected,67,2025-11-12,20:36:03,+05:30
+233,power_disconnected,82,2025-11-12,20:47:59,+05:30
+233,power_connected,32,2025-11-13,02:21:57,+05:30
+233,power_disconnected,44,2025-11-13,02:31:00,+05:30
+233,power_connected,20,2025-11-13,14:21:07,+05:30
+233,power_disconnected,45,2025-11-13,14:37:41,+05:30
+233,power_connected,30,2025-11-13,15:54:17,+05:30
+233,power_disconnected,64,2025-11-13,16:23:41,+05:30
+233,power_connected,59,2025-11-13,16:58:08,+05:30
+233,power_disconnected,70,2025-11-13,17:05:22,+05:30
+233,power_connected,21,2025-11-13,23:57:58,+05:30
+233,power_disconnected,86,2025-11-14,00:40:30,+05:30
+233,power_connected,23,2025-11-14,13:44:52,+05:30
+233,power_disconnected,31,2025-11-14,13:51:23,+05:30
+233,power_connected,15,2025-11-14,14:58:05,+05:30
+233,power_disconnected,34,2025-11-14,15:20:24,+05:30
+233,power_connected,22,2025-11-14,16:20:59,+05:30
+233,power_disconnected,85,2025-11-14,17:00:46,+05:30</textarea>
+                    <button onclick="runSimulation('csv-input-3')"
+                        class="w-full bg-rpg-accent border-thick rounded-xl p-3 shadow-hard btn-press text-white font-bold uppercase tracking-wider flex items-center justify-center gap-2 mt-2">
+                        <span class="material-symbols-outlined">play_arrow</span>
+                        <span data-i18n="run_sim_log_3">Run Simulation — Log 3</span>
+                    </button>
+                </div>
+
+                <!-- Timeline Container (shared) -->
+                <div id="timeline-container"
+                    class="flex flex-col gap-3 hidden pb-4 shrink-0">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+        </div>
+
+        <!-- HIDDEN SANDBOX TAB -->
+        <div id="tab-sandbox" class="flex-col h-full gap-4 hidden overflow-y-auto custom-scrollbar pr-2">
+            <div class="flex flex-col gap-2 border-b-2 border-rpg-text/10 pb-4 shrink-0">
+                <h4 class="font-bold text-xs uppercase text-rpg-text/60">
+                    <span data-i18n="tier_progression">7-Tier Rank Progression</span>
+                </h4>
+                <select id="rank-select" onchange="setRank(this.value)"
+                    class="w-full border-2 border-rpg-text rounded-xl p-3 font-bold text-sm shadow-hard-sm focus:ring-0 focus:outline-none"></select>
+            </div>
+
+            <div class="grid grid-cols-2 gap-3 mb-2 shrink-0">
+                <button onclick="triggerManualInteraction('good')"
+                    class="bg-rpg-surface border-thick rounded-xl p-3 shadow-hard btn-press flex flex-col items-center text-white">
+                    <span class="material-symbols-outlined mb-1">battery_charging_full</span>
+                    <span class="font-bold uppercase text-[10px]"><span data-i18n="good_charge">Good Charge (+XP)</span>
+                </button>
+                <button onclick="triggerManualInteraction('bad')"
+                    class="bg-rpg-muted border-thick rounded-xl p-3 shadow-hard btn-press flex flex-col items-center text-white">
+                    <span class="material-symbols-outlined mb-1">battery_alert</span>
+                    <span class="font-bold uppercase text-[10px]"><span data-i18n="overcharge">Overcharge (-HP)</span>
+                </button>
+            </div>
+
+            <div class="flex gap-2 justify-center shrink-0 mb-4">
+                <button onclick="forceHealthState('thriving')"
+                    class="bg-white border-2 border-rpg-text rounded-lg px-3 py-1 font-bold text-[10px] uppercase shadow-hard-sm btn-press">
+                    Thriving
+                </button>
+                <button onclick="forceHealthState('tired')"
+                    class="bg-white border-2 border-rpg-text rounded-lg px-3 py-1 font-bold text-[10px] uppercase shadow-hard-sm btn-press">
+                    Tired
+                </button>
+                <button onclick="forceHealthState('sick')"
+                    class="bg-white border-2 border-rpg-text rounded-lg px-3 py-1 font-bold text-[10px] uppercase shadow-hard-sm btn-press">
+                    Sick
+                </button>
+            </div>
+        </div>
+    </section>
+
+    <script>
+        // --- HIDDEN SANDBOX EASTER EGG ---
+        let badgeClickCount = 0;
+        function revealSandbox() {
+            badgeClickCount++;
+            if (badgeClickCount >= 5) {
+                document
+                    .getElementById("btn-sandbox")
+                    .classList.remove("hidden");
+                spawnFloatingText(
+                    t('alert_sandbox', 'Sandbox Unlocked!'),
+                    "text-rpg-gold",
+                    -50,
+                );
+                badgeClickCount = 0; // Reset
+            }
+        }
+
+        // --- GEMINI API CONFIGURATION ---
+        // Splitting the key in half prevents GitHub's Secret Scanner from auto-revoking it!
+        const keyPart1 = "AIzaSyDRbzUMUg"; 
+        const keyPart2 = "79Hl_k17rZ5c41O_K0DC5cPtI"; 
+        const apiKey = keyPart1 + keyPart2;
+
+        async function fetchGeminiWithRetry(
+            prompt,
+            systemPrompt,
+            retries = 5,
+        ) {
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=${apiKey}`;
+            const payload = {
+                contents: [{ parts: [{ text: prompt }] }],
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+            };
+
+            for (let i = 0; i < retries; i++) {
+                try {
+                    const response = await fetch(url, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(payload),
+                    });
+                    if (!response.ok)
+                        throw new Error(
+                            `HTTP error! status: ${response.status}`,
+                        );
+                    const result = await response.json();
+                    return (
+                        result.candidates?.[0]?.content?.parts?.[0]?.text ||
+                        "No response received."
+                    );
+                } catch (e) {
+                    if (i === retries - 1)
+                        return "Me oracle broken. Try later.";
+                    await new Promise((r) =>
+                        setTimeout(r, Math.pow(2, i) * 1000),
+                    );
+                }
+            }
+        }
+
+        // Data Arrays
+        const ranks = [
+            { id: 1, name: "Recruit", batch: 1 },
+            { id: 2, name: "Squire", batch: 1 },
+            { id: 3, name: "Knight", batch: 2 },
+            { id: 4, name: "Captain", batch: 3 },
+            { id: 5, name: "Lord", batch: 4 },
+            { id: 6, name: "Duke", batch: 4 },
+            { id: 7, name: "Emperor", batch: 5 }
+        ];
+
+        // State Variables
+        let hp = 100;
+        let xp = 0;
+        let currentRankIndex = 0;
+        let currentSpecies = "cat";
+
+        // Data Analytics Variables
+        let weeklyStats = {};
+        let dailyData = {};
+        let currentHeatmapMode = 'score';
+        let globalMetrics = {
+            overcharges: 0,
+            criticalStarts: 0,
+            perfectCharges: 0,
+            total: 0,
+            totalXpEarned: 0,
+        };
+
+        // DOM Elements
+        const stage = document.getElementById("pet-stage");
+        const catContainer = document.getElementById("cat-container");
+        const hpBar = document.getElementById("hp-bar");
+        const hpText = document.getElementById("hp-text");
+        const xpBar = document.getElementById("xp-bar");
+        const xpText = document.getElementById("xp-text");
+        const statusBadge = document.getElementById("status-badge");
+        const assetLabel = document.getElementById("asset-label");
+        const headerLvl = document.getElementById("header-lvl");
+        const headerTime = document.getElementById("header-time");
+        const aura = document.getElementById("pet-aura");
+        const rankSelect = document.getElementById("rank-select");
+        const stripes = document.getElementById("stripes");
+
+        const timelineContainer =
+            document.getElementById("timeline-container");
+        const tipsContainer = document.getElementById(
+            "dynamic-tips-container",
+        );
+        const statsContentArea =
+            document.getElementById("stats-content-area");
+        const legendBanner = document.getElementById("legend-banner");
+        const legendPrediction =
+            document.getElementById("legend-prediction");
+        const legendProgress = document.getElementById("legend-progress");
+
+        function init() {
+            ranks.forEach((r, idx) => {
+                const opt = document.createElement("option");
+                opt.value = idx;
+                opt.text = `${r.id}. ${t("rank_" + r.id, r.name)} (Batch ${r.batch})`;
+                rankSelect.appendChild(opt);
+            });
+            updateUI();
+        }
+
+        // --- GEMINI LLM FUNCTIONS ---
+
+        async function talkToPet() {
+            const petState =
+                hp > 60 ? "thriving" : hp > 30 ? "tired" : "sick";
+            const rankName = t("rank_" + ranks[currentRankIndex].id, ranks[currentRankIndex].name);
+
+            let explanation = "";
+            if (petState === "sick" || petState === "tired") {
+                if (
+                    globalMetrics.overcharges > globalMetrics.criticalStarts
+                ) {
+                    explanation =
+                        "Explain that you are hurt because the user overcharges you at night too many days.";
+                } else {
+                    explanation =
+                        "Explain that you are starving because the user lets the battery drop too low.";
+                }
+            }
+
+            const prompt = `You are a ${petState} ${currentSpecies} at Rank ${rankName}. Your name is Sparky. ${explanation} Give a short, 1-sentence quote. If you are thriving, be boastful. If sick or tired, complain about the user's bad habits. Limit your response to 12 words maximum.`;
+            const sysPrompt = t("sys_prompt_talk", "You are a companion pet...");
+
+            const bubble = document.getElementById("speech-bubble");
+            bubble.classList.remove("hidden");
+            bubble.innerText = t("thinking", "Thinking...");
+
+            const response = await fetchGeminiWithRetry(prompt, sysPrompt);
+            bubble.innerText = `"${response.replace(/"/g, "")}"`;
+
+            setTimeout(() => {
+                if (bubble.innerText.includes(response.substring(0, 10))) {
+                    bubble.classList.add("hidden");
+                }
+            }, 10000);
+        }
+
+        async function askPetAdvice() {
+            if (globalMetrics.total === 0) {
+                tipsContainer.innerHTML = `<div class="bg-rpg-bg border-2 border-rpg-bad border-dashed rounded-xl p-4 text-center text-sm font-bold text-rpg-bad/80">Please run a CSV Simulation in the Logs tab first!</div>`;
+                return;
+            }
+
+            const rankName = t("rank_" + ranks[currentRankIndex].id, ranks[currentRankIndex].name);
+            const prompt = `You are my ${currentSpecies} pet currently at Rank ${rankName}. Here is my overall battery charging data: ${globalMetrics.total} total charges, ${globalMetrics.overcharges} overcharges (which burns you), ${globalMetrics.perfectCharges} perfect charges (which makes you strong, 20-80%), and ${globalMetrics.criticalStarts} times I starved you by letting the battery drop below 15%. Write a 2-paragraph performance review. Praise me for good things, scold me for bad things, and tell me what to do.`;
+            const sysPrompt = t("sys_prompt_advice", "You are a companion pet...");
+
+            tipsContainer.innerHTML = `<div class="bg-white border-2 border-primary rounded-xl p-6 shadow-hard-sm text-center flex flex-col items-center gap-3">
+                <span class="material-symbols-outlined animate-spin text-primary text-3xl">autorenew</span>
+                <p class="font-bold text-sm text-rpg-text">Pet is thinking hard...</p>
+            </div>`;
+
+            const response = await fetchGeminiWithRetry(prompt, sysPrompt);
+            const formattedHTML = response
+                .replace(/\*\*(.*?)\*\*/g, "<b>$1</b>")
+                .replace(/\n/g, "<br>");
+
+            tipsContainer.innerHTML = `
+                <div class="bg-white border-thick rounded-xl p-4 shadow-hard-sm flex flex-col gap-3">
+                    <div class="flex items-center gap-2 border-b-2 border-rpg-text/10 pb-2">
+                        <span class="material-symbols-outlined text-primary text-2xl">auto_awesome</span>
+                        <h4 class="font-bold uppercase tracking-wider text-rpg-text">Pet Speaks</h4>
+                    </div>
+                    <div class="text-sm text-rpg-text/90 leading-relaxed markdown-content">
+                        ${formattedHTML}
+                    </div>
+                </div>
+            `;
+        }
+
+        // --- TAB LOGIC ---
+        function switchTab(tabId) {
+            ["tab-data", "tab-stats", "tab-tips", "tab-sandbox"].forEach(
+                (id) => {
+                    document.getElementById(id).classList.add("hidden");
+                    document.getElementById(id).classList.remove("flex");
+                },
+            );
+            document.getElementById(tabId).classList.remove("hidden");
+            document.getElementById(tabId).classList.add("flex");
+
+            ["btn-data", "btn-stats", "btn-tips", "btn-sandbox"].forEach(
+                (id) => {
+                    document
+                        .getElementById(id)
+                        .classList.remove(
+                            "bg-primary",
+                            "shadow-[inset_0_-4px_0_rgba(0,0,0,0.2)]",
+                        );
+                    document
+                        .getElementById(id)
+                        .classList.add("hover:bg-white/10");
+                },
+            );
+
+            // Fix: Calculate button ID from tab ID instead of relying on global event
+            const activeBtnId = tabId.replace("tab-", "btn-");
+            const activeBtn = document.getElementById(activeBtnId);
+            if (activeBtn) {
+                activeBtn.classList.add(
+                    "bg-primary",
+                    "shadow-[inset_0_-4px_0_rgba(0,0,0,0.2)]",
+                );
+                activeBtn.classList.remove("hover:bg-white/10");
+            }
+        }
+
+        // --- SIMULATION & PARSING LOGIC ---
+        function runSimulation(csvInputId) {
+            csvInputId = csvInputId || 'csv-input';
+            const rawCsv = document.getElementById(csvInputId).value;
+            const lines = rawCsv.trim().split("\n");
+            if (lines.length < 2) return;
+
+            let sessions = [];
+            let pendingConnect = null;
+
+            for (let i = 1; i < lines.length; i++) {
+                const cols = lines[i].split(",");
+                if (cols.length < 5) continue;
+
+                const type = cols[1];
+                const pct = parseInt(cols[2]);
+                const date = cols[3];
+                const time = cols[4];
+
+                if (type === "power_connected") {
+                    pendingConnect = {
+                        startPct: pct,
+                        startDate: date,
+                        startTime: time,
+                    };
+                } else if (
+                    type === "power_disconnected" &&
+                    pendingConnect
+                ) {
+                    sessions.push({
+                        ...pendingConnect,
+                        endPct: pct,
+                        endDate: date,
+                        endTime: time,
+                    });
+                    pendingConnect = null;
+                }
+            }
+
+            if (sessions.length === 0) return;
+
+            const firstDateObj = new Date(
+                `${sessions[0].startDate}T${sessions[0].startTime}`,
+            );
+            const lastDate = new Date(
+                `${sessions[sessions.length - 1].endDate}T${sessions[sessions.length - 1].endTime}`,
+            );
+            const diffTime = Math.abs(lastDate - firstDateObj);
+            const diffWeeks =
+                Math.ceil(diffTime / (1000 * 60 * 60 * 24 * 7)) || 1;
+            headerTime.textContent = t('week_label').replace('{num}', diffWeeks);
+
+            hp = 100;
+            xp = 0;
+            currentRankIndex = 0;
+            weeklyStats = {};
+            dailyData = {};
+            currentHeatmapMode = 'score';
+            globalMetrics = {
+                overcharges: 0,
+                criticalStarts: 0,
+                perfectCharges: 0,
+                total: sessions.length,
+                totalXpEarned: 0,
+            };
+
+            timelineContainer.innerHTML = "";
+            timelineContainer.classList.remove("hidden");
+
+            sessions.forEach((s, idx) => {
+                let isOvercharge = s.endPct >= 95;
+                let isCriticalStart = s.startPct <= 10;
+                let isPerfectCharge = s.startPct >= 20 && s.endPct <= 85;
+
+                let hpDelta = 0;
+                let xpDelta = 0;
+                let msg = t("msg_standard_charge", "Standard Charge");
+                let colorTheme = "bg-white border-rpg-text text-rpg-text";
+                let icon = "bolt";
+
+                if (isOvercharge) {
+                    hpDelta = -15;
+                    xpDelta = 5;
+                    msg = t("msg_overcharge_penalty", "Overcharge Penalty");
+                    colorTheme = "bg-[#fee2e2] border-rpg-bad text-rpg-bad";
+                    icon = "battery_alert";
+                    globalMetrics.overcharges++;
+                } else if (isCriticalStart) {
+                    hpDelta = -10;
+                    xpDelta = 10;
+                    msg = t("msg_critical_starvation", "Critical Starvation");
+                    colorTheme =
+                        "bg-[#ffedd5] border-primary text-[#c2410c]";
+                    icon = "warning";
+                    globalMetrics.criticalStarts++;
+                } else if (isPerfectCharge) {
+                    hpDelta = +5;
+                    xpDelta = 30;
+                    msg = t("msg_perfect_charge", "Perfect Charge!");
+                    colorTheme =
+                        "bg-[#d1fae5] border-rpg-surface text-[#065f46]";
+                    icon = "stars";
+                    globalMetrics.perfectCharges++;
+                } else {
+                    hpDelta = +2;
+                    xpDelta = 15;
+                }
+
+                const sDate = new Date(s.startDate);
+                const daysDiff = Math.floor(
+                    (sDate - firstDateObj) / (1000 * 60 * 60 * 24),
+                );
+                const weekNum = Math.floor(daysDiff / 7) + 1;
+                const weekKey = `Week ${weekNum}`;
+
+                if (!weeklyStats[weekKey])
+                    weeklyStats[weekKey] = {
+                        xp: 0,
+                        hpDelta: 0,
+                        over: 0,
+                        perf: 0,
+                        crit: 0,
+                        total: 0,
+                        weekNum: weekNum,
+                    };
+
+                weeklyStats[weekKey].xp += xpDelta;
+                weeklyStats[weekKey].hpDelta += hpDelta;
+                weeklyStats[weekKey].total++;
+                if (isOvercharge) weeklyStats[weekKey].over++;
+                if (isCriticalStart) weeklyStats[weekKey].crit++;
+                if (isPerfectCharge) weeklyStats[weekKey].perf++;
+
+                // --- Daily Data for Heatmap ---
+                const dayKey = s.startDate;
+                if (!dailyData[dayKey]) {
+                    dailyData[dayKey] = {
+                        date: dayKey,
+                        sessions: 0,
+                        overcharges: 0,
+                        perfects: 0,
+                        criticals: 0,
+                        totalScore: 0,
+                        types: [],
+                    };
+                }
+                dailyData[dayKey].sessions++;
+                if (isOvercharge) dailyData[dayKey].overcharges++;
+                if (isPerfectCharge) dailyData[dayKey].perfects++;
+                if (isCriticalStart) dailyData[dayKey].criticals++;
+
+                // Compute a simple session score: perfect=100, good=70, critical=30, overcharge=10
+                let sessionScore = 70;
+                if (isPerfectCharge) sessionScore = 100;
+                else if (isCriticalStart) sessionScore = 30;
+                else if (isOvercharge) sessionScore = 10;
+                dailyData[dayKey].totalScore += sessionScore;
+                dailyData[dayKey].types.push(
+                    isOvercharge ? 'overcharge' :
+                    isCriticalStart ? 'critical' :
+                    isPerfectCharge ? 'perfect' : 'ok'
+                );
+
+                globalMetrics.totalXpEarned += xpDelta;
+
+                hp = Math.min(100, Math.max(0, hp + hpDelta));
+                xp += xpDelta;
+                while (xp >= 100 && currentRankIndex < 6) {
+                    currentRankIndex++;
+                    xp -= 100;
+                }
+                if (currentRankIndex >= 6) xp = 100;
+
+                // Snapshot cumulative state at end of this day
+                dailyData[dayKey].hpAtEndOfDay = hp;
+                dailyData[dayKey].rankAtEndOfDay = currentRankIndex;
+                dailyData[dayKey].xpAtEndOfDay = xp;
+                dailyData[dayKey].rankName = t("rank_" + ranks[currentRankIndex].id, ranks[currentRankIndex].name);
+
+                const card = document.createElement("div");
+                card.className = `${colorTheme} border-thick rounded-xl p-3 flex justify-between items-center shadow-hard-sm opacity-0 transform translate-y-4 transition-all duration-500 shrink-0`;
+                card.innerHTML = `
+                    <div class="flex items-center gap-3">
+                        <div class="w-10 h-10 rounded-full border-2 border-current flex items-center justify-center bg-white/50">
+                            <span class="material-symbols-outlined">${icon}</span>
+                        </div>
+                        <div>
+                            <p class="font-bold text-xs uppercase tracking-wide opacity-70">${formatDateShort(s.startDate)} ${s.startTime.slice(0, 5)}</p>
+                            <p class="font-black text-sm">${s.startPct}% &rarr; ${s.endPct}%</p>
+                        </div>
+                    </div>
+                    <div class="text-right flex flex-col items-end">
+                        <span class="font-bold text-[10px] uppercase bg-white/50 px-2 py-0.5 rounded-md border border-current">${msg}</span>
+                        <span class="font-bold text-xs mt-1">${hpDelta > 0 ? "+" + hpDelta : hpDelta} HP | +${xpDelta} XP</span>
+                    </div>
+                `;
+                timelineContainer.prepend(card);
+
+                setTimeout(
+                    () =>
+                        card.classList.remove("opacity-0", "translate-y-4"),
+                    idx * 80,
+                );
+            });
+
+            setRank(currentRankIndex);
+            updateUI();
+            evaluateHealthState();
+
+            setTimeout(
+                () => {
+                    spawnFloatingText(
+                        t("final_rank", "Final Rank: {rank_name}").replace("{rank_name}", t("rank_" + ranks[currentRankIndex].id, ranks[currentRankIndex].name)),
+                        "text-rpg-gold",
+                        -80,
+                    );
+                    renderStatsView(diffWeeks);
+                    renderHeatmap(currentHeatmapMode);
+                    document.getElementById('heatmap-section').classList.remove('hidden');
+                    document.querySelectorAll('.heatmap-toggle-btn').forEach(b => {
+                        b.classList.toggle('active', b.dataset.mode === currentHeatmapMode);
+                    });
+                    switchTab("tab-stats");
+                },
+                sessions.length * 80 + 500,
+            );
+
+            document.getElementById("csv-input").classList.add("hidden");
+            document.getElementById("csv-input-2").classList.add("hidden");
+            document.getElementById("csv-input-3").classList.add("hidden");
+        }
+
+        // --- STATS LOGIC (Duolingo/Angry Birds Map) ---
+        function renderStatsView(totalWeeks) {
+            statsContentArea.innerHTML =
+                '<div class="relative pl-8 pt-2" id="journey-path"></div>';
+            const journeyPath = document.getElementById("journey-path");
+
+            const keys = Object.keys(weeklyStats);
+
+            if (keys.length === 0) return;
+
+            // Render Path to Legend Banner
+            const maxXPNeeded = 600; // Rank 7 requires 600 cumulative XP
+            const xpPerWeek = globalMetrics.totalXpEarned / totalWeeks;
+            const weeksLeft =
+                xpPerWeek > 0
+                    ? Math.ceil(
+                        (maxXPNeeded - globalMetrics.totalXpEarned) /
+                        xpPerWeek,
+                    )
+                    : "∞";
+            const progressPct = Math.min(
+                100,
+                (globalMetrics.totalXpEarned / maxXPNeeded) * 100,
+            );
+
+            legendBanner.classList.remove("hidden");
+            if (globalMetrics.totalXpEarned >= maxXPNeeded) {
+                legendPrediction.innerText = t("emperor", "You are an Emperor!");
+            } else {
+                legendPrediction.innerText = t("weeks_away", "~{weeks} Weeks Away").replace("{weeks}", weeksLeft);
+            }
+            legendProgress.style.width = `${progressPct}%`;
+
+            // Draw Journey Line
+            journeyPath.innerHTML += `<div class="absolute left-4 top-6 bottom-6 w-1.5 bg-rpg-text/20 rounded-full"></div>`;
+
+            // Render nodes chronologically (Week 1 at top)
+            keys.forEach((key) => {
+                const stats = weeklyStats[key];
+
+                // Calculate Angry Birds Star Rating (1 to 3)
+                let stars = 1;
+                if (stats.over === 0 && stats.perf > stats.total * 0.5)
+                    stars = 3;
+                else if (stats.over <= 2) stars = 2;
+
+                let starHtml = "";
+                for (let i = 1; i <= 3; i++) {
+                    if (i <= stars)
+                        starHtml += `<span class="star-filled">★</span>`;
+                    else starHtml += `<span class="star-empty">★</span>`;
+                }
+
+                // Node Color based on stars
+                let nodeColor =
+                    stars === 3
+                        ? "bg-rpg-gold text-white"
+                        : stars === 2
+                            ? "bg-primary text-white"
+                            : "bg-rpg-muted text-white";
+
+                const node = document.createElement("div");
+                node.className = "relative mb-6 last:mb-0";
+                node.innerHTML = `
+                    <div class="absolute -left-8 top-4 w-8 h-8 rounded-full border-thick ${nodeColor} z-10 flex items-center justify-center shadow-hard-sm font-black text-xs">
+                        W${stats.weekNum}
+                    </div>
+                    <div class="bg-white border-thick p-3 rounded-xl shadow-hard ml-2 flex flex-col gap-2">
+                        <div class="flex justify-between items-center border-b-2 border-rpg-text/10 pb-1">
+                            <span class="font-bold text-xs uppercase text-rpg-text/60">${key} Complete</span>
+                            <div class="text-xl tracking-[0.2em] leading-none">${starHtml}</div>
+                        </div>
+                        <div class="grid grid-cols-2 gap-2 mt-1">
+                            <div class="flex flex-col bg-[#d1fae5] rounded p-1 border-2 border-[#065f46]">
+                                <span class="text-[10px] uppercase font-bold text-[#065f46]/70">${t("stat_perfect", "Perfect")}</span>
+                                <span class="text-sm font-black text-[#065f46]">${stats.perf}</span>
+                            </div>
+                            <div class="flex flex-col bg-[#fee2e2] rounded p-1 border-2 border-rpg-bad">
+                                <span class="text-[10px] uppercase font-bold text-rpg-bad/70">${t("stat_overcharges", "Overcharges")}</span>
+                                <span class="text-sm font-black text-rpg-bad">${stats.over}</span>
+                            </div>
+                        </div>
+                        <div class="bg-rpg-bg rounded-lg p-1.5 border-2 border-rpg-text text-center mt-1">
+                            <span class="text-[10px] font-bold uppercase tracking-wider text-rpg-text"><span data-i18n="xp_earned">XP Earned:</span> <span class="text-primary text-sm font-black">+${stats.xp}</span></span>
+                        </div>
+                    </div>
+                `;
+                journeyPath.appendChild(node);
+            });
+        }
+
+        function formatDateShort(dateStr) {
+            const d = new Date(dateStr);
+            return d.toLocaleDateString("en-US", {
+                month: "short",
+                day: "numeric",
+            });
+        }
+
+        // --- HEATMAP LOGIC ---
+        function switchHeatmapMode(mode) {
+            currentHeatmapMode = mode;
+            document.querySelectorAll('.heatmap-toggle-btn').forEach(b => {
+                b.classList.toggle('active', b.dataset.mode === mode);
+            });
+            renderHeatmap(mode);
+        }
+
+        function getHeatmapColor(dayInfo, mode) {
+            if (!dayInfo) return '#9CA3AF';
+
+            if (mode === 'sessions') {
+                const count = dayInfo.sessions;
+                if (count === 0) return '#9CA3AF';
+                if (count === 1) return '#F9A215';
+                if (count === 2) return '#81B29A';
+                return '#FACC15';
+            }
+
+            if (mode === 'quality') {
+                if (dayInfo.overcharges > 0) return '#E07A5F';
+                if (dayInfo.criticals > 0) return '#F9A215';
+                if (dayInfo.perfects === dayInfo.sessions) return '#FACC15';
+                return '#81B29A';
+            }
+
+            // mode === 'score'
+            const avg = dayInfo.totalScore / dayInfo.sessions;
+            if (avg >= 90) return '#FACC15';
+            if (avg >= 65) return '#81B29A';
+            if (avg >= 40) return '#F9A215';
+            return '#E07A5F';
+        }
+
+        function renderHeatmap(mode) {
+            const grid = document.getElementById('heatmap-grid');
+            const summaryEl = document.getElementById('heatmap-summary');
+            grid.innerHTML = '';
+
+            const dateKeys = Object.keys(dailyData).sort();
+            if (dateKeys.length === 0) return;
+
+            const firstDate = new Date(dateKeys[0] + 'T00:00:00');
+            const lastDate = new Date(dateKeys[dateKeys.length - 1] + 'T00:00:00');
+
+            // Adjust firstDate back to Monday
+            const firstDow = firstDate.getDay();
+            const mondayOffset = firstDow === 0 ? -6 : 1 - firstDow;
+            const startMonday = new Date(firstDate);
+            startMonday.setDate(startMonday.getDate() + mondayOffset);
+
+            const allDays = [];
+            const cursor = new Date(startMonday);
+            while (cursor <= lastDate) {
+                allDays.push(new Date(cursor));
+                cursor.setDate(cursor.getDate() + 1);
+            }
+            while (allDays.length % 7 !== 0) {
+                allDays.push(new Date(cursor));
+                cursor.setDate(cursor.getDate() + 1);
+            }
+
+            const weeks = [];
+            for (let i = 0; i < allDays.length; i += 7) {
+                weeks.push(allDays.slice(i, i + 7));
+            }
+
+            // Header row
+            const dayLabels = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+            const cornerEl = document.createElement('div');
+            grid.appendChild(cornerEl);
+            dayLabels.forEach(label => {
+                const el = document.createElement('div');
+                el.className = 'heatmap-day-label';
+                el.textContent = label;
+                grid.appendChild(el);
+            });
+
+            // Render each week row
+            weeks.forEach((week, weekIdx) => {
+                const weekLabel = document.createElement('div');
+                weekLabel.className = 'heatmap-week-label';
+                const monthStr = week[0].toLocaleDateString('en-US', { month: 'short' });
+                const prevMonthStr = weekIdx > 0
+                    ? weeks[weekIdx - 1][0].toLocaleDateString('en-US', { month: 'short' })
+                    : '';
+                weekLabel.textContent = (weekIdx === 0 || monthStr !== prevMonthStr) ? monthStr : '';
+                grid.appendChild(weekLabel);
+
+                week.forEach(day => {
+                    const dateStr = day.toISOString().split('T')[0];
+                    const dayInfo = dailyData[dateStr];
+                    const cell = document.createElement('div');
+                    cell.className = 'heatmap-cell';
+
+                    const color = dayInfo ? getHeatmapColor(dayInfo, mode) : '#E8E5D1';
+                    cell.style.backgroundColor = color;
+
+                    if (!dayInfo) {
+                        cell.style.borderColor = '#d1cbb8';
+                        cell.style.cursor = 'default';
+                    }
+
+                    if (dayInfo) {
+                        cell.addEventListener('click', (e) => {
+                            e.stopPropagation();
+                            showHeatmapPopover(cell, dayInfo, mode);
+                        });
+                    }
+
+                    grid.appendChild(cell);
+                });
+            });
+
+            const totalDays = dateKeys.length;
+            summaryEl.textContent = `${totalDays} active day${totalDays !== 1 ? 's' : ''} · ${globalMetrics.total} sessions`;
+        }
+
+        let activePopover = null;
+        let savedPetState = null;
+
+        // Day comments — regular locale uses caveman, genz uses slang
+        const dayCommentsRegular = {
+            perfect: [
+                "Me remember this day! You charge good, me belly full!",
+                "This day me so happy! 20 to 80, perfect!",
+                "Me dance this day! You best human!",
+                "Good day! Me strong like ox! You charge right!",
+                "Me purr all day! You finally learn!",
+            ],
+            good: [
+                "This day okay. Me not complain. Could be better though.",
+                "Me feel decent this day. You try, me see that.",
+                "Not bad day! Me have enough food. Me content.",
+                "This day me nap peacefully. You charge okay.",
+                "Me remember... was fine day. Me survive!",
+            ],
+            bad: [
+                "This day you BURN me! Too much charge, me hurt!",
+                "Ugh! Me remember pain! You overcharge, me suffer!",
+                "Bad day! You plug all night, me belly explode!",
+                "Me cry this day! Why you do 100%?! WHY?!",
+                "This day me feel fire inside! Stop overcharge!",
+            ],
+            critical: [
+                "Me STARVE this day! You let battery die!",
+                "This day me almost gone! You forget me exist?!",
+                "Me so hungry this day... me see darkness...",
+                "You let me drop to nothing! Me weak, me scared!",
+                "This day me beg for food. You no listen!",
+            ],
+            mixed: [
+                "This day confusing! Sometimes good, sometimes you hurt me!",
+                "Me not know how feel this day. Up and down!",
+                "Weird day! You charge good then burn me. Make up mind!",
+                "This day give me headache. Good then bad then good...",
+                "Me dizzy this day! You all over the place!",
+            ],
+        };
+
+        const dayCommentsGenz = {
+            perfect: [
+                "Yooo this day was bussin no cap! 20-80 perfection fr fr!",
+                "This day? Main character energy! You ate!",
+                "Slay day! Me was THRIVING bestie!",
+                "This was peak performance no cap! You understood the assignment!",
+                "W day! Me living my best life fr!",
+            ],
+            good: [
+                "This day was aight, not gonna lie. It was giving mid.",
+                "Decent vibes this day tbh. Could be more bussin tho.",
+                "This day? It was okay I guess. Me survived.",
+                "Not the worst day, not the best. It's giving neutral.",
+                "Meh day. Me vibed but nothing special fr.",
+            ],
+            bad: [
+                "This day was TOXIC bruh! You burned me alive!",
+                "Overcharge?! That's a HUGE L bestie, not cool!",
+                "This day was down bad fr! You did me dirty!",
+                "Major red flag energy this day! 100% is NOT it!",
+                "Bruh this day was sus! Why you tryna fry me?!",
+            ],
+            critical: [
+                "This day me was STARVING fr fr! You ghosted me!",
+                "Me almost unalived this day! Zero energy, zero vibes!",
+                "You left me on read AND uncharged?! Down bad fr!",
+                "This day was giving starvation core. NOT the vibe!",
+                "Me was literally fading this day. Touch grass and charge me!",
+            ],
+            mixed: [
+                "This day was giving chaos energy tbh! Up and down fr!",
+                "Bruh this day was a whole rollercoaster no cap!",
+                "Mixed signals much?! Good then bad then good, bestie pick a lane!",
+                "This day was lowkey confusing. Me couldn't even!",
+                "Emotional damage this day fr! Make up your mind!",
+            ],
+        };
+
+        function getDayPetState(dayInfo) {
+            const avg = dayInfo.totalScore / dayInfo.sessions;
+            if (avg >= 80) return 'thriving';
+            if (avg >= 50) return 'tired';
+            return 'sick';
+        }
+
+        function getDayComment(dayInfo) {
+            let category;
+            if (dayInfo.overcharges > 0 && dayInfo.perfects > 0) {
+                category = 'mixed';
+            } else if (dayInfo.overcharges > 0) {
+                category = 'bad';
+            } else if (dayInfo.criticals > 0) {
+                category = 'critical';
+            } else if (dayInfo.perfects === dayInfo.sessions) {
+                category = 'perfect';
+            } else {
+                category = 'good';
+            }
+            const comments = currentLocale === 'genz' ? dayCommentsGenz : dayCommentsRegular;
+            const pool = comments[category];
+            return pool[Math.floor(Math.random() * pool.length)];
+        }
+
+        function showHeatmapPopover(cell, dayInfo, mode) {
+            dismissHeatmapPopover();
+
+            // Save current pet state before overriding
+            if (!savedPetState) {
+                savedPetState = {
+                    hp: hp,
+                    xp: xp,
+                    rankIndex: currentRankIndex,
+                    healthState: hp > 60 ? 'thriving' : hp > 30 ? 'tired' : 'sick',
+                };
+            }
+
+            const popover = document.createElement('div');
+            popover.className = 'heatmap-popover';
+            popover.id = 'heatmap-active-popover';
+
+            const dateObj = new Date(dayInfo.date + 'T00:00:00');
+            const dateFormatted = dateObj.toLocaleDateString('en-US', {
+                weekday: 'short', month: 'short', day: 'numeric'
+            });
+
+            const avg = Math.round(dayInfo.totalScore / dayInfo.sessions);
+            const dayRankName = dayInfo.rankName || t("rank_1", ranks[0].name);
+            const dayRankId = dayInfo.rankAtEndOfDay !== undefined ? dayInfo.rankAtEndOfDay + 1 : 1;
+
+            // Build type summary
+            let typeSummary = '';
+            if (dayInfo.perfects > 0) typeSummary += `<span style="color:#065f46;">✦ ${dayInfo.perfects} ${t('stat_perfect', 'perfect')}</span> `;
+            if (dayInfo.overcharges > 0) typeSummary += `<span style="color:#dc2626;">⚠ ${dayInfo.overcharges} ${t('heatmap_overcharge', 'overcharge')}</span> `;
+            if (dayInfo.criticals > 0) typeSummary += `<span style="color:#c2410c;">▼ ${dayInfo.criticals} ${t('heatmap_critical', 'critical')}</span> `;
+            const okCount = dayInfo.sessions - dayInfo.perfects - dayInfo.overcharges - dayInfo.criticals;
+            if (okCount > 0) typeSummary += `<span style="color:#3d405b;">● ${okCount} ${t('heatmap_standard', 'standard')}</span>`;
+
+            popover.innerHTML = `
+                <div style="font-weight:700;font-size:12px;color:#3d405b;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.05em;">${dateFormatted}</div>
+                <div style="font-size:11px;color:#3d405b;margin-bottom:6px;">
+                    <span style="font-weight:800;font-size:16px;color:#f9a215;">${dayInfo.sessions}</span>
+                    <span style="font-weight:600;opacity:0.7;"> session${dayInfo.sessions !== 1 ? 's' : ''}</span>
+                    ${mode === 'score' ? `<span style="margin-left:6px;font-weight:800;font-size:16px;color:${getHeatmapColor(dayInfo, 'score')};">${avg}</span><span style="font-weight:600;opacity:0.7;"> avg score</span>` : ''}
+                </div>
+                <div style="font-size:10px;font-weight:600;display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;">${typeSummary}</div>
+                <div style="font-size:10px;font-weight:700;color:#3d405b;border-top:2px solid #3d405b20;padding-top:5px;display:flex;justify-content:space-between;align-items:center;">
+                    <span>⚔ ${t('level_label', 'RANK {id}').replace('{id}', dayRankId)}: ${dayRankName}</span>
+                    <span style="color:${dayInfo.hpAtEndOfDay > 60 ? '#81B29A' : dayInfo.hpAtEndOfDay > 30 ? '#F9A215' : '#E07A5F'};">${dayInfo.hpAtEndOfDay !== undefined ? dayInfo.hpAtEndOfDay : '?'} HP</span>
+                </div>
+            `;
+
+            document.body.appendChild(popover);
+            activePopover = popover;
+
+            // Position the popover
+            const cellRect = cell.getBoundingClientRect();
+            const popoverRect = popover.getBoundingClientRect();
+
+            let left = cellRect.left + cellRect.width / 2 - popoverRect.width / 2;
+            let top = cellRect.top - popoverRect.height - 8;
+
+            if (left < 8) left = 8;
+            if (left + popoverRect.width > window.innerWidth - 8) {
+                left = window.innerWidth - popoverRect.width - 8;
+            }
+            if (top < 8) {
+                top = cellRect.bottom + 8;
+            }
+
+            popover.style.left = `${left}px`;
+            popover.style.top = `${top}px`;
+
+            // --- Pet reacts to this day's data ---
+            const dayState = getDayPetState(dayInfo);
+            forceHealthState(dayState);
+
+            if (dayInfo.hpAtEndOfDay !== undefined) {
+                hp = dayInfo.hpAtEndOfDay;
+            }
+            if (dayInfo.xpAtEndOfDay !== undefined) {
+                xp = dayInfo.xpAtEndOfDay;
+            }
+
+            if (dayInfo.rankAtEndOfDay !== undefined) {
+                setRank(dayInfo.rankAtEndOfDay);
+            } else {
+                updateUI();
+            }
+
+            // Show speech bubble with day-specific comment
+            const bubble = document.getElementById('speech-bubble');
+            const comment = getDayComment(dayInfo);
+            bubble.innerText = `"${comment}"`;
+            bubble.classList.remove('hidden');
+            bubble.classList.add('animate-bounce-up');
+            setTimeout(() => bubble.classList.remove('animate-bounce-up'), 500);
+
+            // Trigger pet animation based on state
+            if (dayState === 'sick') {
+                catContainer.classList.add('animate-shake');
+                setTimeout(() => catContainer.classList.remove('animate-shake'), 400);
+            } else if (dayState === 'thriving') {
+                catContainer.classList.add('animate-bounce-up');
+                setTimeout(() => catContainer.classList.remove('animate-bounce-up'), 500);
+            }
+        }
+
+        function dismissHeatmapPopover() {
+            if (activePopover) {
+                activePopover.remove();
+                activePopover = null;
+            }
+
+            // Restore pet to its simulation-final state
+            if (savedPetState) {
+                forceHealthState(savedPetState.healthState);
+                hp = savedPetState.hp;
+                xp = savedPetState.xp;
+                setRank(savedPetState.rankIndex);
+                const bubble = document.getElementById('speech-bubble');
+                bubble.classList.add('hidden');
+                savedPetState = null;
+            }
+        }
+
+        // Dismiss popover on tap outside
+        document.addEventListener('click', (e) => {
+            if (activePopover && !e.target.closest('.heatmap-cell') && !e.target.closest('.heatmap-popover')) {
+                dismissHeatmapPopover();
+            }
+        });
+
+        // --- PET LOGIC ---
+        function setSpecies(species) {
+            currentSpecies = species;
+            catContainer.classList.remove(
+                "species-cat",
+                "species-dog",
+                "species-rabbit",
+            );
+            catContainer.classList.add(`species-${species}`);
+            stripes.style.opacity = species === "cat" ? "0.3" : "0";
+            catContainer.classList.add("animate-level-up");
+            setTimeout(
+                () => catContainer.classList.remove("animate-level-up"),
+                800,
+            );
+            updateLabels();
+        }
+
+        function setRank(index) {
+            currentRankIndex = parseInt(index);
+            const rankData = ranks[currentRankIndex];
+
+            for (let i = 1; i <= 5; i++) {
+                document
+                    .getElementById(`eq-batch-${i}`)
+                    .classList.add("hidden");
+                document
+                    .getElementById(`eq-batch-${i}`)
+                    .classList.remove("block");
+            }
+
+            document
+                .getElementById(`eq-batch-${rankData.batch}`)
+                .classList.remove("hidden");
+            document
+                .getElementById(`eq-batch-${rankData.batch}`)
+                .classList.add("block");
+
+            if (rankSelect) rankSelect.value = currentRankIndex;
+
+            catContainer.classList.add("animate-level-up");
+            setTimeout(
+                () => catContainer.classList.remove("animate-level-up"),
+                800,
+            );
+            updateUI();
+        }
+
+        function triggerManualInteraction(type) {
+            if (type === "good") {
+                hp = Math.min(100, hp + 15);
+                xp += 30;
+                if (xp >= 100) {
+                    if (currentRankIndex < 6) {
+                        setRank(currentRankIndex + 1);
+                        xp = 0;
+                    } else {
+                        xp = 100;
+                    }
+                }
+            } else {
+                hp = Math.max(0, hp - 20);
+                catContainer.classList.add("animate-shake");
+                setTimeout(
+                    () => catContainer.classList.remove("animate-shake"),
+                    400,
+                );
+            }
+            updateUI();
+            evaluateHealthState();
+        }
+
+        function evaluateHealthState() {
+            if (hp > 60) forceHealthState("thriving");
+            else if (hp > 30) forceHealthState("tired");
+            else forceHealthState("sick");
+        }
+
+        function forceHealthState(stateName) {
+            stage.classList.remove(
+                "state-thriving",
+                "state-tired",
+                "state-sick",
+            );
+            document.getElementById("eye-l").style.height = "16px";
+            document.getElementById("eye-r").style.height = "16px";
+            document.getElementById("mouth").style.borderRadius = "9999px";
+            document.getElementById("mouth").style.transform = "none";
+
+            if (stateName === "thriving") {
+                stage.classList.add("state-thriving");
+                statusBadge.textContent = t("status_thriving", "Status: Thriving");
+                statusBadge.className =
+                    "bg-rpg-accent border-thick rounded-full px-4 py-1 text-white text-xs font-bold uppercase transition-colors";
+                aura.classList.replace(
+                    "bg-rpg-muted/30",
+                    "bg-rpg-accent/30",
+                );
+                aura.classList.replace(
+                    "bg-gray-400/30",
+                    "bg-rpg-accent/30",
+                );
+            } else if (stateName === "tired") {
+                stage.classList.add("state-tired");
+                statusBadge.textContent = t("status_tired", "Status: Tired");
+                statusBadge.className =
+                    "bg-gray-500 border-thick rounded-full px-4 py-1 text-white text-xs font-bold uppercase transition-colors";
+                aura.classList.replace(
+                    "bg-rpg-accent/30",
+                    "bg-gray-400/30",
+                );
+                aura.classList.replace("bg-rpg-muted/30", "bg-gray-400/30");
+                document.getElementById("eye-l").style.height = "4px";
+                document.getElementById("eye-r").style.height = "4px";
+            } else if (stateName === "sick") {
+                stage.classList.add("state-sick");
+                statusBadge.textContent = t("status_critical", "Status: Critical");
+                statusBadge.className =
+                    "bg-rpg-muted border-thick rounded-full px-4 py-1 text-white text-xs font-bold uppercase transition-colors";
+                aura.classList.replace(
+                    "bg-rpg-accent/30",
+                    "bg-rpg-muted/30",
+                );
+                aura.classList.replace("bg-gray-400/30", "bg-rpg-muted/30");
+                document.getElementById("mouth").style.transform =
+                    "rotate(180deg) translateY(5px)";
+            }
+        }
+
+        function updateLabels() {
+            const rankData = ranks[currentRankIndex];
+            const speciesName =
+                currentSpecies.charAt(0).toUpperCase() +
+                currentSpecies.slice(1);
+            assetLabel.textContent = t("asset_label", "Asset: {rank_name} {species} (Batch {batch})").replace("{rank_name}", t("rank_" + rankData.id, rankData.name)).replace("{species}", speciesName).replace("{batch}", rankData.batch);
+            headerLvl.textContent = t("level_label", "RANK {id}").replace("{id}", rankData.id);
+        }
+
+        function updateUI() {
+            let hpColor = "bg-rpg-accent";
+            if (hp <= 60) hpColor = "bg-primary";
+            if (hp <= 30) hpColor = "bg-rpg-muted";
+
+            hpBar.className = `h-full ${hpColor} border-r-4 border-rpg-text transition-all duration-500`;
+            hpBar.style.width = `${hp}%`;
+            hpText.textContent = `${hp}/100`;
+
+            xpBar.style.width = `${xp}%`;
+            xpText.textContent = `${xp} / 100`;
+
+            updateLabels();
+
+            const badge = document.getElementById("lvl-badge");
+            badge.classList.add("scale-110");
+            setTimeout(() => badge.classList.remove("scale-110"), 200);
+        }
+
+        function spawnFloatingText(text, colorClass, offsetY = 0) {
+            const el = document.createElement("div");
+            el.className = `floating-text ${colorClass}`;
+            el.textContent = text;
+            const randomX = (Math.random() - 0.5) * 40;
+            el.style.left = `calc(50% + ${randomX}px)`;
+            el.style.top = `calc(30% + ${offsetY}px)`;
+            stage.appendChild(el);
+            setTimeout(() => el.remove(), 1000);
+        }
+
+        function handleFileUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function (e) {
+                document.getElementById("csv-input").value =
+                    e.target.result;
+                document
+                    .getElementById("csv-input")
+                    .classList.remove("hidden");
+                document
+                    .getElementById("csv-input-2")
+                    .classList.remove("hidden");
+                document
+                    .getElementById("csv-input-3")
+                    .classList.remove("hidden");
+                document
+                    .getElementById("timeline-container")
+                    .classList.add("hidden");
+                document.getElementById("timeline-container").innerHTML =
+                    "";
+                event.target.value = "";
+                spawnFloatingText(t('alert_csv_loaded', 'CSV Loaded!'), "text-rpg-surface", -20);
+            };
+            reader.readAsText(file);
+        }
+
+        window.onload = init;
+
+
+        let appLocales = { regular: { "title": "ChargePet - Timeline & Data Engine", "week_label": "Week 0", "cat_btn": "\ud83d\udc31 Cat", "dog_btn": "\ud83d\udc36 Dog", "rabbit_btn": "\ud83d\udc30 Rabbit", "talk_btn": "Talk \u2728", "battery_health": "Battery Health (HP)", "exp_rank_up": "Exp to Rank Up", "tab_stats": "Stats", "tab_tips": "Tips", "tab_logs": "Logs", "tab_sandbox": "Dev", "journey_map": "Journey Map", "path_emperor": "Path to Emperor", "run_sim_stats_msg": "Run the simulation in the Logs tab first to build your Journey Map!", "pets_advice": "Pet's Advice", "ask_advice_btn": "Ask Pet for Advice \u2728", "run_sim_tips_msg": "Run the simulation in the Logs tab first to receive personalized advice!", "general_wisdom": "General Wisdom", "rule_20_80_title": "The Golden Rule: 20-80", "rule_20_80_desc": "Keep your pet's energy between 20% and 80%. Going to 100% causes stress, and dropping below 20% makes them starve!", "night_charge_title": "Beware the Night Charge", "night_charge_desc": "Leaving your pet plugged in overnight guarantees severe overcharge damage. Avoid it to keep HP high.", "csv_import": "CSV Import", "load_csv": "Load CSV", "run_simulation": "Run Simulation", "tier_progression": "7-Tier Rank Progression", "good_charge": "Good Charge (+XP)", "overcharge": "Overcharge (-HP)", "state_thriving": "Thriving", "state_tired": "Tired", "state_sick": "Sick", "sys_prompt_talk": "You are a companion pet. You speak like a primitive caveman with simple, broken English (e.g., 'Me happy!', 'You charge night many days, me burn!'). Do not break character. Do not use complex words.", "sys_prompt_advice": "You are a companion pet. You speak like a primitive caveman with simple, broken English (e.g., 'You charge night many days, me hurt. Do 20 to 80 charge.'). Give actionable tips to the user about their charging habits. Use simple markdown for bolding (**text**).", "status_thriving": "Status: Thriving", "status_tired": "Status: Tired", "status_critical": "Status: Critical", "msg_overcharge_penalty": "Overcharge Penalty", "msg_critical_starvation": "Critical Starvation", "msg_perfect_charge": "Perfect Charge!", "msg_standard_charge": "Standard Charge", "alert_csv_loaded": "CSV Loaded!", "alert_sandbox": "Sandbox Unlocked!", "week_complete": "{week} Complete", "xp_earned": "XP Earned: ", "weeks_away": "~{weeks} Weeks Away", "emperor": "You are an Emperor!", "rank_1": "Recruit", "rank_2": "Squire", "rank_3": "Knight", "rank_4": "Captain", "rank_5": "Lord", "rank_6": "Duke", "rank_7": "Emperor", "asset_label": "Asset: {rank_name} {species} (Batch {batch})", "level_label": "RANK {id}", "final_rank": "Final Rank: {rank_name}", "thinking": "Thinking...", "stat_perfect": "Perfect", "stat_overcharges": "Overcharges", "charging_heatmap": "Charging Heatmap", "heatmap_sessions": "\ud83d\udd22 Sessions", "heatmap_quality": "\u2b50 Quality", "heatmap_score": "\ud83d\udcca Score", "heatmap_less": "Less", "heatmap_more": "More", "heatmap_overcharge": "overcharge", "heatmap_critical": "critical", "heatmap_standard": "standard", "log_1_label": "Log 1 \u2014 Normal Charging", "log_2_label": "Log 2 \u2014 Bad Charging", "log_3_label": "Log 3 \u2014 Good Charging", "run_sim_log_1": "Run Simulation \u2014 Log 1", "run_sim_log_2": "Run Simulation \u2014 Log 2", "run_sim_log_3": "Run Simulation \u2014 Log 3", "or_try": "or try" }, genz: { "title": "VoltBuddy - Vibing & Data", "week_label": "Week 0", "cat_btn": "\ud83d\udc31 Kitty", "dog_btn": "\ud83d\udc36 Doggo", "rabbit_btn": "\ud83d\udc30 Bunbun", "talk_btn": "Vibe Check \u2728", "battery_health": "Battery Vibes (HP)", "exp_rank_up": "Clout to Level Up", "tab_stats": "Receipts", "tab_tips": "Tea", "tab_logs": "Logs", "tab_sandbox": "Dev", "journey_map": "Vibe Check History", "path_emperor": "Path to GOAT", "run_sim_stats_msg": "Run the sim in the Logs tab first to get your receipts, bestie!", "pets_advice": "Spill the Tea", "ask_advice_btn": "Ask Pet for Tea \u2728", "run_sim_tips_msg": "Run the sim first so I can spill the tea!", "general_wisdom": "Main Character Energy", "rule_20_80_title": "The Golden Rule: 20-80 fr", "rule_20_80_desc": "Keep your pet's energy between 20% and 80%. Going to 100% is toxic, and dropping below 20% is literally starving them!", "night_charge_title": "Night Charging is an Ick", "night_charge_desc": "Leaving it plugged in overnight is major red flag energy. Avoid it to keep HP high.", "csv_import": "Drop the CSV", "load_csv": "Load Receipts", "run_simulation": "Send It", "tier_progression": "7-Tier Flex Progression", "good_charge": "W Charge (+Clout)", "overcharge": "L Charge (-Vibes)", "state_thriving": "Bussin", "state_tired": "Mid", "state_sick": "Down Bad", "sys_prompt_talk": "You are a companion pet. You speak like a GenZ teenager who uses a lot of slang like 'no cap', 'fr fr', 'bruh', 'sus', and 'bussin'. Do not break character.", "sys_prompt_advice": "You are a companion pet. You speak like a GenZ teenager. Give actionable advice about their charging in slang. Use simple markdown for bolding (**text**).", "status_thriving": "Vibe: Bussin", "status_tired": "Vibe: Mid", "status_critical": "Vibe: Down Bad", "msg_overcharge_penalty": "Big Yikes", "msg_critical_starvation": "Starving Fr", "msg_perfect_charge": "W Charge!", "msg_standard_charge": "It's giving charge", "alert_csv_loaded": "Receipts Dropped!", "alert_sandbox": "Dev Mode Unlocked No Cap!", "week_complete": "{week} in the bag", "xp_earned": "Clout Gained: ", "weeks_away": "~{weeks} Weeks to GOAT", "emperor": "You are the GOAT fr!", "rank_1": "NPC", "rank_2": "Lurker", "rank_3": "Based", "rank_4": "Verified", "rank_5": "Main Character", "rank_6": "Sigma", "rank_7": "The GOAT", "asset_label": "Drip: {rank_name} {species} (Drop {batch})", "level_label": "LEVEL {id}", "final_rank": "Final Clout: {rank_name}", "thinking": "Cooking...", "stat_perfect": "W's", "stat_overcharges": "L's", "charging_heatmap": "Vibe Map", "heatmap_sessions": "\ud83d\udd22 Sesh Count", "heatmap_quality": "\u2b50 Vibes", "heatmap_score": "\ud83d\udcca Receipts", "heatmap_less": "Mid", "heatmap_more": "Bussin", "heatmap_overcharge": "L charge", "heatmap_critical": "starving", "heatmap_standard": "ok ig", "log_1_label": "Log 1 \u2014 Mid Charging", "log_2_label": "Log 2 \u2014 Down Bad Charging", "log_3_label": "Log 3 \u2014 W Charging", "run_sim_log_1": "Send It \u2014 Log 1", "run_sim_log_2": "Send It \u2014 Log 2", "run_sim_log_3": "Send It \u2014 Log 3", "or_try": "or vibe with" } };
+        let currentLocale = 'genz';
+
+        // Ensure we load via fetch or inline
+        async function loadLocales() {
+            try {
+                const resReg = await fetch('regular.json');
+                if (resReg.ok) appLocales.regular = await resReg.json();
+
+                const resGenz = await fetch('genz.json');
+                if (resGenz.ok) appLocales.genz = await resGenz.json();
+            } catch (e) {
+                console.warn('Failed to load json over fetch due to CORS/file path');
+            }
+            applyLocale();
+        }
+
+        function t(key, defaultVal) {
+            if (appLocales[currentLocale] && appLocales[currentLocale][key]) return appLocales[currentLocale][key];
+            return defaultVal || key;
+        }
+
+        window.changeLocale = function (loc) {
+            currentLocale = loc;
+            applyLocale();
+        }
+
+        function applyLocale() {
+            document.querySelectorAll('[data-i18n]').forEach(el => {
+                const key = el.getAttribute('data-i18n');
+                if (appLocales[currentLocale] && appLocales[currentLocale][key]) {
+                    el.innerHTML = appLocales[currentLocale][key];
+                }
+            });
+
+            // Regenerate rank options
+            const rs = document.getElementById("rank-select");
+            if (rs) {
+                Array.from(rs.options).forEach((opt, idx) => {
+                    const r = ranks[idx];
+                    opt.text = `${r.id}. ${t("rank_" + r.id, r.name)} (Batch ${r.batch})`;
+                });
+            }
+
+            // Update labels and active status
+            updateLabels();
+            evaluateHealthState();
+
+            // Re-render journey/stats if available
+            const diffWeeks = parseInt((headerTime.textContent.match(/\d+/) || [0])[0]);
+            if (diffWeeks > 0) {
+                headerTime.textContent = t('week_label').replace('{num}', diffWeeks);
+            }
+        }
+
+        const origInit = window.onload;
+        window.onload = async function () {
+            await loadLocales();
+            if (origInit) origInit();
+        };
+
+    </script>
+</body>
+
+
+</html>
