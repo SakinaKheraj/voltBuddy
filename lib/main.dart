@@ -13,6 +13,11 @@ import 'widgets/neo_brutalist.dart';
 import 'widgets/pet_renderer.dart';
 import 'widgets/heatmap_widget.dart';
 import 'widgets/journey_map_widget.dart';
+import 'package:workmanager/workmanager.dart';
+// Background task imports
+import 'background/battery_task.dart';
+import 'background/schedule_battery.dart';
+import 'ui/home_page.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
