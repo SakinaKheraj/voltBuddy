@@ -19,7 +19,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.10.1
+  sdk: ">=3.3.0 <4.0.0"
 
 # Dependencies specify other packages that your package needs in order to work.
 # To automatically upgrade your package dependencies to the latest versions
@@ -36,9 +36,11 @@ dependencies:
   cupertino_icons: ^1.0.8
   http: ^1.6.0
   file_picker: ^11.0.2
-  google_fonts: ^8.1.0
-+  sqflite: ^2.3.0      # SQLite database
-+  path: ^1.9.0          # Path utilities for DB location
+  google_fonts: ^6.3.2
+  sqflite: ^2.3.0      # SQLite database
+  path: ^1.9.0          # Path utilities for DB location
+  workmanager: ^0.7.0  # Background tasks on Android
+  battery_plus: ^5.0.0   # Battery level and charging state
 
 dev_dependencies:
   flutter_test:

@@ -13,7 +13,7 @@ class HomePage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<int>(
-      future: BatteryDb().countRecords(),
+      future: BatteryDb().count(),
       builder: (context, snapshot) {
         // While waiting for the DB query
         if (!snapshot.hasData) {

@@ -15,8 +15,7 @@
 8. [UI Flow](#ui-flow)
 9. [Dependencies](#dependencies)
 10. [Project Structure](#project-structure)
-11. [Contributing](#contributing)
-12. [License](#license)
+
 
 ---
 
@@ -141,16 +140,3 @@ README.md           # This file
 ```
 Keep new features in their own folders to maintain a clean, feature‑first layout.
 
----
-
-## Contributing
-Contributions are welcome! Please follow these steps:
-1. Fork the repository.
-2. Create a feature branch (`git checkout -b feature/your‑feature`).
-3. Ensure the code follows the existing architecture and runs `flutter test` (if tests exist).
-4. Submit a Pull Request with a clear description.
-
----
-
-## License
-This project is licensed under the **MIT License** – see the `LICENSE` file for details.
