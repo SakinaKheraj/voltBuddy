@@ -8,9 +8,7 @@
 
 | Drip & Vibe Stage | receipts (Logs Tab) | vibe map (Receipts Tab) |
 | :---: | :---: | :---: |
-| *Add home_screen.png here* | *Add receipts.png here* | *Add heatmap.png here* |
-| <!-- Placeholder for Home Screen Screenshot --> | <!-- Placeholder for Logs Tab Screenshot --> | <!-- Placeholder for Heatmap Screenshot --> |
-
+| <img width="250" height="600" alt="WhatsApp Image 2026-05-30 at 19 15 59" src="https://github.com/user-attachments/assets/72ab4bba-e28b-450f-8ea0-e1261d105f8e" />| <img width="250" height="600" alt="WhatsApp Image 2026-05-30 at 19 15 59 (1)" src="https://github.com/user-attachments/assets/5c3ff9a5-def0-41b5-9071-4045a1650f9c" /> | <img width="250" height="600" alt="WhatsApp Image 2026-05-30 at 19 15 59 (2)" src="https://github.com/user-attachments/assets/22727c14-34de-44f9-9d2c-17c5e6c39335" />
 ---
 
 ## 📖 Table of Contents
