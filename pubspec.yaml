@@ -39,6 +39,7 @@ dependencies:
   google_fonts: ^6.3.2
   sqflite: ^2.3.0      # SQLite database
   path: ^1.9.0          # Path utilities for DB location
+  path_provider: ^2.1.2 # App directory utilities
   workmanager: ^0.7.0  # Background tasks on Android
   battery_plus: ^5.0.0   # Battery level and charging state
 

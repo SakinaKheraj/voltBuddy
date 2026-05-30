@@ -36,18 +36,37 @@ class JourneyMapWidget extends StatelessWidget {
       });
 
     if (sortedKeys.isEmpty) {
-      return Container(
-        padding: const EdgeInsets.all(16.0),
-        decoration: BoxDecoration(
-          color: NeoColors.rpgBg,
-          borderRadius: BorderRadius.circular(12.0),
-          border: Border.all(
-            color: NeoColors.rpgText,
-            width: 2.0,
-            style: BorderStyle.none, // simple dashed box in web
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.map, color: NeoColors.rpgText, size: 20.0),
+              const SizedBox(width: 8),
+              Text(
+                loc.translate('vibe_check_history', defaultVal: 'Vibe Check History').toUpperCase(),
+                style: const TextStyle(
+                  fontFamily: 'Space Grotesk',
+                  fontWeight: FontWeight.w900,
+                  fontSize: 16.0,
+                  color: NeoColors.rpgText,
+                ),
+              ),
+            ],
           ),
-        ),
-        child: Column(
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(16.0),
+            decoration: BoxDecoration(
+              color: NeoColors.rpgBg,
+              borderRadius: BorderRadius.circular(12.0),
+              border: Border.all(
+                color: NeoColors.rpgText,
+                width: 2.0,
+                style: BorderStyle.none, // simple dashed box in web
+              ),
+            ),
+            child: Column(
           children: [
             // Simulates dashed border by using a simple border decoration
             Container(
@@ -75,8 +94,10 @@ class JourneyMapWidget extends StatelessWidget {
             ),
           ],
         ),
-      );
-    }
+      ),
+    ],
+  );
+}
 
     // Path to Legend / Path to GOAT
     const int maxXPNeeded = 600;
@@ -96,6 +117,23 @@ class JourneyMapWidget extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        Row(
+          children: [
+            const Icon(Icons.map, color: NeoColors.rpgText, size: 20.0),
+            const SizedBox(width: 8),
+            Text(
+              loc.translate('vibe_check_history', defaultVal: 'Vibe Check History').toUpperCase(),
+              style: const TextStyle(
+                fontFamily: 'Space Grotesk',
+                fontWeight: FontWeight.w900,
+                fontSize: 16.0,
+                color: NeoColors.rpgText,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+
         // Path to Legend Banner
         NeoCard(
           backgroundColor: NeoColors.rpgSurface,

@@ -27,6 +27,7 @@ class PetRenderer extends StatefulWidget {
   final bool speechVisible;
   final List<FloatingTextModel> floatingTexts;
   final int glowTrigger;
+  final bool isCharging;
 
   const PetRenderer({
     super.key,
@@ -38,6 +39,7 @@ class PetRenderer extends StatefulWidget {
     required this.speechVisible,
     required this.floatingTexts,
     this.glowTrigger = 0,
+    this.isCharging = false,
   });
 
   @override
@@ -250,12 +252,15 @@ class _PetRendererState extends State<PetRenderer>
   }
 
   Color _getAuraColor() {
+    if (widget.isCharging) {
+      return const Color(0xFF2A9D8F);
+    }
     if (widget.healthState == 'sick') {
       return NeoColors.rpgMuted;
     } else if (widget.healthState == 'tired') {
       return Colors.grey.shade400;
     }
-    return NeoColors.rpgGold;
+    return const Color.fromARGB(255, 255, 204, 0);
   }
 
   @override
@@ -357,7 +362,7 @@ class _PetRendererState extends State<PetRenderer>
                 // SPEECH BUBBLE
                 if (widget.speechVisible)
                   Positioned(
-                    top: -35,
+                    top: -24,
                     child: TweenAnimationBuilder<double>(
                       tween: Tween<double>(begin: 0.0, end: 1.0),
                       duration: const Duration(milliseconds: 300),
@@ -432,6 +437,7 @@ class _PetRendererState extends State<PetRenderer>
                           wiggleAnimation: _wiggleAnimation,
                           blinkAnimation: _blinkAnimation,
                           breathAnimation: _breathAnimation,
+                          isCharging: widget.isCharging,
                         ),
                       ),
                     ),
@@ -471,6 +477,7 @@ class DrawnPet extends StatelessWidget {
   final Animation<double> wiggleAnimation;
   final Animation<double> blinkAnimation;
   final Animation<double> breathAnimation;
+  final bool isCharging;
 
   const DrawnPet({
     super.key,
@@ -481,6 +488,7 @@ class DrawnPet extends StatelessWidget {
     required this.wiggleAnimation,
     required this.blinkAnimation,
     required this.breathAnimation,
+    this.isCharging = false,
   });
 
   String _getMood() {
@@ -829,11 +837,12 @@ class DrawnPet extends StatelessWidget {
           color: NeoColors.primary,
           shape: BoxShape.circle,
           border: Border.all(color: NeoColors.rpgText, width: 4.0),
-          boxShadow: const [
+          boxShadow: [
             BoxShadow(
-              color: NeoColors.rpgText,
-              offset: Offset(4, 4),
-              blurRadius: 0,
+              color: isCharging ? const Color(0xFF2A9D8F) : NeoColors.rpgText,
+              offset: const Offset(4, 4),
+              blurRadius: isCharging ? 8.0 : 0.0,
+              spreadRadius: isCharging ? 2.0 : 0.0,
             ),
           ],
         ),

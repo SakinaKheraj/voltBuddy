@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:voltbuddy/data/battery_db.dart'; // adjust import if needed
 

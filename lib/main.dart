@@ -13,11 +13,9 @@ import 'widgets/neo_brutalist.dart';
 import 'widgets/pet_renderer.dart';
 import 'widgets/heatmap_widget.dart';
 import 'widgets/journey_map_widget.dart';
-import 'package:workmanager/workmanager.dart';
-// Background task imports
-import 'background/battery_task.dart';
-import 'background/schedule_battery.dart';
-import 'ui/home_page.dart';
+
+import 'package:battery_plus/battery_plus.dart';
+import 'data/battery_db.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -52,7 +50,7 @@ class MainScreen extends StatefulWidget {
   State<MainScreen> createState() => _MainScreenState();
 }
 
-class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateMixin {
+class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   final LocalizationService _loc = LocalizationService();
   final GeminiService _gemini = GeminiService();
 
@@ -93,9 +91,14 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   int _simulatedWeeksCount = 0;
 
   // Active/Simulating Sessions Timeline Cards
-  final List<ChargeSession> _simulationSessions = [];
   final List<Map<String, dynamic>> _timelineCards = [];
   bool _isSimulating = false;
+
+  // Real-Time Tracking State
+  bool _isCharging = false;
+  bool _useSimulation = false;
+  StreamSubscription<BatteryState>? _batterySubscription;
+  final Battery _battery = Battery();
 
   // Expanded cards index state tracker
   final Set<int> _expandedCardIndices = {};
@@ -125,6 +128,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _currentLanguage = _loc.currentLocale;
 
     _screenShakeController = AnimationController(
@@ -134,10 +138,17 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     _screenShakeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
       CurvedAnimation(parent: _screenShakeController, curve: Curves.linear),
     );
+
+    // Load real-time battery stats
+    _loadRealStats();
+    // Initialize active charging detection
+    _initBatteryListener();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _batterySubscription?.cancel();
     _speechTimer?.cancel();
     _csvInputController.dispose();
     _csvInputController2.dispose();
@@ -330,21 +341,249 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
   // --- SIMULATION LOGIC ---
 
+  // --- REAL-TIME CHARGING LOGIC & DB HELPERS ---
+
+  Future<void> _loadRealStats() async {
+    final sessions = await BatteryDb().getAllChargeSessions();
+    _applySessionsToState(sessions, isSimulation: false);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _checkBatteryAndPendingSession();
+    } else if (state == AppLifecycleState.paused) {
+      _saveCheckpoint();
+    }
+  }
+
+  Future<void> _saveCheckpoint() async {
+    try {
+      final state = await _battery.batteryState;
+      final currentLevel = await _battery.batteryLevel;
+      await BatteryDb().insertRecord(BatteryRecord(
+        timestamp: DateTime.now().toIso8601String(),
+        level: currentLevel,
+        state: state.toString().split('.').last,
+      ));
+    } catch (_) {}
+  }
+
+  void _initBatteryListener() async {
+    await _checkBatteryAndPendingSession();
+
+    _batterySubscription = _battery.onBatteryStateChanged.listen((BatteryState state) {
+      _handleBatteryStateChange(state);
+    });
+  }
+
+  Future<void> _checkBatteryAndPendingSession() async {
+    try {
+      final state = await _battery.batteryState;
+      final currentLevel = await _battery.batteryLevel;
+      final isNowCharging = state == BatteryState.charging || state == BatteryState.full;
+      
+      final pending = await BatteryDb().getPendingSession();
+      final latestRecord = await BatteryDb().getLatestRecord();
+      
+      final now = DateTime.now();
+      final dateStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+      final timeStr = "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}";
+
+      if (isNowCharging != _isCharging) {
+        setState(() {
+          _isCharging = isNowCharging;
+          if (_isCharging) {
+            _petGlowTrigger++;
+          }
+        });
+      }
+
+      int? offlineStartPct;
+      String? offlineStartDate;
+      String? offlineStartTime;
+
+      if (pending != null) {
+        offlineStartPct = pending['start_pct'] as int;
+        offlineStartDate = pending['start_date'] as String;
+        offlineStartTime = pending['start_time'] as String;
+      } else if (latestRecord != null && latestRecord.level < currentLevel - 1) {
+        offlineStartPct = latestRecord.level;
+        try {
+          final dt = DateTime.parse(latestRecord.timestamp);
+          offlineStartDate = "${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}";
+          offlineStartTime = "${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}";
+        } catch (_) {
+          offlineStartDate = dateStr;
+          offlineStartTime = timeStr;
+        }
+      }
+
+      if (offlineStartPct != null && currentLevel > offlineStartPct) {
+        await BatteryDb().clearPendingSession();
+
+        final completedSession = ChargeSession(
+          startPct: offlineStartPct,
+          startDate: offlineStartDate ?? dateStr,
+          startTime: offlineStartTime ?? timeStr,
+          endPct: currentLevel,
+          endDate: dateStr,
+          endTime: timeStr,
+        );
+
+        await BatteryDb().insertChargeSession(completedSession);
+        _spawnFloatingText("Charged to $currentLevel%!", const Color(0xFF2A9D8F));
+        _showSpeechBubble("Charged! +${currentLevel - offlineStartPct}% battery.");
+
+        if (!_useSimulation) {
+          await _loadRealStats();
+        }
+      }
+
+      if (isNowCharging) {
+        final refreshedPending = await BatteryDb().getPendingSession();
+        if (refreshedPending == null) {
+          await BatteryDb().savePendingSession(currentLevel, dateStr, timeStr);
+        }
+      } else {
+        await BatteryDb().clearPendingSession();
+      }
+
+      await BatteryDb().insertRecord(BatteryRecord(
+        timestamp: now.toIso8601String(),
+        level: currentLevel,
+        state: state.toString().split('.').last,
+      ));
+
+    } catch (e) {
+      print("Error in _checkBatteryAndPendingSession: $e");
+    }
+  }
+
+  Future<void> _handleBatteryStateChange(BatteryState state) async {
+    final isNowCharging = state == BatteryState.charging || state == BatteryState.full;
+    if (isNowCharging == _isCharging) return;
+
+    setState(() {
+      _isCharging = isNowCharging;
+      if (_isCharging) {
+        _petGlowTrigger++;
+      }
+    });
+
+    try {
+      final currentLevel = await _battery.batteryLevel;
+      final now = DateTime.now();
+      final dateStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+      final timeStr = "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}";
+
+      if (_isCharging) {
+        await BatteryDb().savePendingSession(currentLevel, dateStr, timeStr);
+        _spawnFloatingText("Charging Started! ⚡", const Color(0xFF2A9D8F));
+        _showSpeechBubble("Charging... Feeling the power! ⚡");
+      } else {
+        final pending = await BatteryDb().getPendingSession();
+        if (pending != null) {
+          final startPct = pending['start_pct'] as int;
+          final startDate = pending['start_date'] as String;
+          final startTime = pending['start_time'] as String;
+
+          await BatteryDb().clearPendingSession();
+
+          final completedSession = ChargeSession(
+            startPct: startPct,
+            startDate: startDate,
+            startTime: startTime,
+            endPct: currentLevel,
+            endDate: dateStr,
+            endTime: timeStr,
+          );
+
+          await BatteryDb().insertChargeSession(completedSession);
+          _spawnFloatingText("Charged to $currentLevel%!", const Color(0xFF2A9D8F));
+          _showSpeechBubble("Charged! +${currentLevel - startPct}% battery.");
+
+          if (!_useSimulation) {
+            await _loadRealStats();
+          }
+        }
+      }
+    } catch (e) {
+      print("Error in _handleBatteryStateChange: $e");
+    }
+  }
+
+  void _toggleSimulationMode(bool value) async {
+    setState(() {
+      _useSimulation = value;
+    });
+    if (_useSimulation) {
+      _runSimulation(_csvInputController.text);
+    } else {
+      await _loadRealStats();
+    }
+  }
+
+  Widget _buildSimulationBanner() {
+    if (!_useSimulation) return const SizedBox.shrink();
+    return Container(
+      width: double.infinity,
+      color: NeoColors.primary,
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          const Expanded(
+            child: Row(
+              children: [
+                Icon(Icons.warning, color: Colors.white, size: 18),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    "SIMULATION MODE ACTIVE",
+                    style: TextStyle(
+                      fontFamily: 'Space Grotesk',
+                      fontWeight: FontWeight.bold,
+                      fontSize: 12.0,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          GestureDetector(
+            onTap: () => _toggleSimulationMode(false),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: NeoColors.rpgText, width: 1.5),
+              ),
+              child: const Text(
+                "RESTORE REAL DATA",
+                style: TextStyle(
+                  fontFamily: 'Space Grotesk',
+                  fontWeight: FontWeight.w900,
+                  fontSize: 10.0,
+                  color: NeoColors.rpgText,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // --- SIMULATION LOGIC ---
+
   void _runSimulation(String text) {
     if (_isSimulating) return;
 
     final lines = text.trim().split("\n");
     if (lines.length < 2) return;
-
-    // Temporary variables to hold calculation state
-    int localHp = 100;
-    int localXp = 0;
-    int localRankIndex = 0;
-
-    final Map<String, WeeklyMetrics> localWeeklyStats = {};
-    final Map<String, DailyMetrics> localDailyData = {};
-    final GlobalMetrics localGlobalMetrics = GlobalMetrics();
-    final List<Map<String, dynamic>> localTimelineCards = [];
 
     List<ChargeSession> sessions = [];
     LogEntry? pendingConnect;
@@ -373,198 +612,228 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
     if (sessions.isEmpty) return;
 
-    // Determine simulation week count
-    final firstDateObj = DateTime.parse('${sessions.first.startDate} ${sessions.first.startTime}');
-    final lastDateObj = DateTime.parse('${sessions.last.endDate} ${sessions.last.endTime}');
-    final diffDays = lastDateObj.difference(firstDateObj).inDays;
-    final diffWeeks = (diffDays / 7.0).ceil();
-    final localSimulatedWeeksCount = diffWeeks == 0 ? 1 : diffWeeks;
-
-    localGlobalMetrics.total = sessions.length;
-
-    for (int idx = 0; idx < sessions.length; idx++) {
-      final s = sessions[idx];
-
-      final startDt = DateTime.parse('${s.startDate} ${s.startTime}');
-      final endDt = DateTime.parse('${s.endDate} ${s.endTime}');
-      final duration = endDt.difference(startDt);
-      final h = duration.inHours;
-      final m = duration.inMinutes % 60;
-      final durationStr = h > 0 ? '${h}h ${m}m' : '${m}m';
-
-      int hpDelta = 0;
-      int xpDelta = 0;
-      String msg = _loc.translate("msg_standard_charge", defaultVal: "Standard Charge");
-      String flavorText = "Standard charging session. Sparky charged peacefully. Keep it between 20% and 80% to earn extra bonuses next time!";
-      Color cardBg = Colors.white;
-      Color cardBorder = NeoColors.rpgText;
-      Color cardText = NeoColors.rpgText;
-      IconData icon = Icons.bolt;
-
-      if (s.isOvercharge) {
-        hpDelta = -15;
-        xpDelta = 5;
-        msg = _loc.translate("msg_overcharge_penalty", defaultVal: "Overcharge Penalty");
-        flavorText = "Ouch! Left plugged in past 95%. This causes sustained high voltage stress, degrading battery health (-15 HP).";
-        cardBg = const Color(0xFFFEE2E2);
-        cardBorder = NeoColors.rpgBad;
-        cardText = NeoColors.rpgBad;
-        icon = Icons.battery_alert;
-        localGlobalMetrics.overcharges++;
-      } else if (s.isCriticalStart) {
-        hpDelta = -10;
-        xpDelta = 10;
-        msg = _loc.translate("msg_critical_starvation", defaultVal: "Critical Starvation");
-        flavorText = "Starvation warning! Charging started below 10%. Deep discharges put heavy stress on battery cells (-10 HP).";
-        cardBg = const Color(0xFFFFEDD5);
-        cardBorder = NeoColors.primary;
-        cardText = const Color(0xFFC2410C);
-        icon = Icons.warning_amber;
-        localGlobalMetrics.criticalStarts++;
-      } else if (s.isPerfectCharge) {
-        hpDelta = 5;
-        xpDelta = 30;
-        msg = _loc.translate("msg_perfect_charge", defaultVal: "Perfect Charge!");
-        flavorText = "Bussin! Started above 20% and stopped before 85%. Excellent battery stewardship (+5 HP, +30 XP).";
-        cardBg = const Color(0xFFD1FAE5);
-        cardBorder = NeoColors.rpgSurface;
-        cardText = const Color(0xFF065F46);
-        icon = Icons.stars;
-        localGlobalMetrics.perfectCharges++;
-      } else {
-        hpDelta = 2;
-        xpDelta = 15;
-      }
-
-      // Add to Weekly Stats aggregation
-      final sDate = DateTime.parse('${s.startDate} 00:00:00');
-      final daysDiff = sDate.difference(firstDateObj).inDays;
-      final weekNum = (daysDiff / 7).floor() + 1;
-      final weekKey = "Week $weekNum";
-
-      localWeeklyStats.putIfAbsent(weekKey, () => WeeklyMetrics(weekNum: weekNum, key: weekKey));
-      final weekMetrics = localWeeklyStats[weekKey]!;
-      weekMetrics.xp += xpDelta;
-      weekMetrics.hpDelta += hpDelta;
-      weekMetrics.total++;
-      if (s.isOvercharge) weekMetrics.over++;
-      if (s.isCriticalStart) weekMetrics.crit++;
-      if (s.isPerfectCharge) weekMetrics.perf++;
-
-      // Daily Data aggregation for Heatmap
-      final dayKey = s.startDate;
-      localDailyData.putIfAbsent(dayKey, () => DailyMetrics(date: dayKey));
-      final dailyMetrics = localDailyData[dayKey]!;
-      dailyMetrics.sessions++;
-      if (s.isOvercharge) dailyMetrics.overcharges++;
-      if (s.isCriticalStart) dailyMetrics.criticals++;
-      if (s.isPerfectCharge) dailyMetrics.perfects++;
-
-      int sessionScore = 70;
-      if (s.isPerfectCharge) {
-        sessionScore = 100;
-      } else if (s.isCriticalStart) {
-        sessionScore = 30;
-      } else if (s.isOvercharge) {
-        sessionScore = 10;
-      }
-      dailyMetrics.totalScore += sessionScore;
-      dailyMetrics.types.add(s.isOvercharge
-          ? 'overcharge'
-          : s.isCriticalStart
-              ? 'critical'
-              : s.isPerfectCharge
-                  ? 'perfect'
-                  : 'ok');
-
-      localGlobalMetrics.totalXpEarned += xpDelta;
-
-      // Update state
-      localHp = math.min(100, math.max(0, localHp + hpDelta));
-      localXp += xpDelta;
-      while (localXp >= 100 && localRankIndex < 6) {
-        localRankIndex++;
-        localXp -= 100;
-      }
-      if (localRankIndex >= 6) {
-        localXp = 100;
-      }
-
-      // Save snapshots at end of day
-      dailyMetrics.hpAtEndOfDay = localHp;
-      dailyMetrics.rankAtEndOfDay = localRankIndex;
-      dailyMetrics.xpAtEndOfDay = localXp;
-
-      final id = _ranks[localRankIndex]["id"] as int;
-      final fallback = _ranks[localRankIndex]["name"] as String;
-      dailyMetrics.rankName = _loc.translate("rank_$id", defaultVal: fallback);
-
-      final cardInfo = {
-        'date': s.startDate,
-        'time': s.startTime,
-        'startPct': s.startPct,
-        'endPct': s.endPct,
-        'msg': msg,
-        'hpDelta': hpDelta,
-        'xpDelta': xpDelta,
-        'cardBg': cardBg,
-        'cardBorder': cardBorder,
-        'cardText': cardText,
-        'icon': icon,
-        'duration': durationStr,
-        'flavorText': flavorText,
-      };
-
-      // Add to front of timeline list to match prepend
-      localTimelineCards.insert(0, cardInfo);
-    }
-
-    final bool leveledUp = localRankIndex > _currentRankIndex;
-    final bool perfectChargeHappened = localGlobalMetrics.perfectCharges > _globalMetrics.perfectCharges;
-    final bool xpReached100 = (localXp >= 100 && _xp < 100);
-    final bool hasPenalty = localGlobalMetrics.overcharges > _globalMetrics.overcharges ||
-                            localGlobalMetrics.criticalStarts > _globalMetrics.criticalStarts;
+    _applySessionsToState(sessions, isSimulation: true);
 
     setState(() {
-      _hp = localHp;
-      _xp = localXp;
-      _currentRankIndex = localRankIndex;
-      _simFinalHp = localHp;
-      _simFinalXp = localXp;
-      _simFinalRankIndex = localRankIndex;
+      _currentTab = "tab-stats";
+    });
+  }
 
-      if (leveledUp || perfectChargeHappened || xpReached100) {
-        _petGlowTrigger++;
+  void _applySessionsToState(List<ChargeSession> sessions, {required bool isSimulation}) {
+    int localHp = 100;
+    int localXp = 0;
+    int localRankIndex = 0;
+
+    final Map<String, WeeklyMetrics> localWeeklyStats = {};
+    final Map<String, DailyMetrics> localDailyData = {};
+    final GlobalMetrics localGlobalMetrics = GlobalMetrics();
+    final List<Map<String, dynamic>> localTimelineCards = [];
+
+    if (sessions.isNotEmpty) {
+      final firstDateObj = DateTime.parse('${sessions.first.startDate} ${sessions.first.startTime}');
+      final lastDateObj = DateTime.parse('${sessions.last.endDate} ${sessions.last.endTime}');
+      final diffDays = lastDateObj.difference(firstDateObj).inDays;
+      final diffWeeks = (diffDays / 7.0).ceil();
+      final localWeeksCount = diffWeeks == 0 ? 1 : diffWeeks;
+
+      localGlobalMetrics.total = sessions.length;
+
+      for (int idx = 0; idx < sessions.length; idx++) {
+        final s = sessions[idx];
+
+        final startDt = DateTime.parse('${s.startDate} ${s.startTime}');
+        final endDt = DateTime.parse('${s.endDate} ${s.endTime}');
+        final duration = endDt.difference(startDt);
+        final h = duration.inHours;
+        final m = duration.inMinutes % 60;
+        final durationStr = h > 0 ? '${h}h ${m}m' : '${m}m';
+
+        int hpDelta = 0;
+        int xpDelta = 0;
+        String msg = _loc.translate("msg_standard_charge", defaultVal: "Standard Charge");
+        String flavorText = "Standard charging session. Sparky charged peacefully. Keep it between 20% and 80% to earn extra bonuses next time!";
+        Color cardBg = Colors.white;
+        Color cardBorder = NeoColors.rpgText;
+        Color cardText = NeoColors.rpgText;
+        IconData icon = Icons.bolt;
+
+        if (s.isOvercharge) {
+          hpDelta = -15;
+          xpDelta = 5;
+          msg = _loc.translate("msg_overcharge_penalty", defaultVal: "Overcharge Penalty");
+          flavorText = "Ouch! Left plugged in past 95%. This causes sustained high voltage stress, degrading battery health (-15 HP).";
+          cardBg = const Color(0xFFFEE2E2);
+          cardBorder = NeoColors.rpgBad;
+          cardText = NeoColors.rpgBad;
+          icon = Icons.battery_alert;
+          localGlobalMetrics.overcharges++;
+        } else if (s.isCriticalStart) {
+          hpDelta = -10;
+          xpDelta = 10;
+          msg = _loc.translate("msg_critical_starvation", defaultVal: "Critical Starvation");
+          flavorText = "Starvation warning! Charging started below 10%. Deep discharges put heavy stress on battery cells (-10 HP).";
+          cardBg = const Color(0xFFFFEDD5);
+          cardBorder = NeoColors.primary;
+          cardText = const Color(0xFFC2410C);
+          icon = Icons.warning_amber;
+          localGlobalMetrics.criticalStarts++;
+        } else if (s.isPerfectCharge) {
+          hpDelta = 5;
+          xpDelta = 30;
+          msg = _loc.translate("msg_perfect_charge", defaultVal: "Perfect Charge!");
+          flavorText = "Bussin! Started above 20% and stopped before 85%. Excellent battery stewardship (+5 HP, +30 XP).";
+          cardBg = const Color(0xFFD1FAE5);
+          cardBorder = NeoColors.rpgSurface;
+          cardText = const Color(0xFF065F46);
+          icon = Icons.stars;
+          localGlobalMetrics.perfectCharges++;
+        } else {
+          hpDelta = 2;
+          xpDelta = 15;
+        }
+
+        final sDate = DateTime.parse('${s.startDate} 00:00:00');
+        final daysDiff = sDate.difference(firstDateObj).inDays;
+        final weekNum = (daysDiff / 7).floor() + 1;
+        final weekKey = "Week $weekNum";
+
+        localWeeklyStats.putIfAbsent(weekKey, () => WeeklyMetrics(weekNum: weekNum, key: weekKey));
+        final weekMetrics = localWeeklyStats[weekKey]!;
+        weekMetrics.xp += xpDelta;
+        weekMetrics.hpDelta += hpDelta;
+        weekMetrics.total++;
+        if (s.isOvercharge) weekMetrics.over++;
+        if (s.isCriticalStart) weekMetrics.crit++;
+        if (s.isPerfectCharge) weekMetrics.perf++;
+
+        final dayKey = s.startDate;
+        localDailyData.putIfAbsent(dayKey, () => DailyMetrics(date: dayKey));
+        final dailyMetrics = localDailyData[dayKey]!;
+        dailyMetrics.sessions++;
+        if (s.isOvercharge) dailyMetrics.overcharges++;
+        if (s.isCriticalStart) dailyMetrics.criticals++;
+        if (s.isPerfectCharge) dailyMetrics.perfects++;
+
+        int sessionScore = 70;
+        if (s.isPerfectCharge) {
+          sessionScore = 100;
+        } else if (s.isCriticalStart) {
+          sessionScore = 30;
+        } else if (s.isOvercharge) {
+          sessionScore = 10;
+        }
+        dailyMetrics.totalScore += sessionScore;
+        dailyMetrics.types.add(s.isOvercharge
+            ? 'overcharge'
+            : s.isCriticalStart
+                ? 'critical'
+                : s.isPerfectCharge
+                    ? 'perfect'
+                    : 'ok');
+
+        localGlobalMetrics.totalXpEarned += xpDelta;
+
+        localHp = math.min(100, math.max(0, localHp + hpDelta));
+        localXp += xpDelta;
+        while (localXp >= 100 && localRankIndex < 6) {
+          localRankIndex++;
+          localXp -= 100;
+        }
+        if (localRankIndex >= 6) {
+          localXp = 100;
+        }
+
+        dailyMetrics.hpAtEndOfDay = localHp;
+        dailyMetrics.rankAtEndOfDay = localRankIndex;
+        dailyMetrics.xpAtEndOfDay = localXp;
+
+        final id = _ranks[localRankIndex]["id"] as int;
+        final fallback = _ranks[localRankIndex]["name"] as String;
+        dailyMetrics.rankName = _loc.translate("rank_$id", defaultVal: fallback);
+
+        final cardInfo = {
+          'date': s.startDate,
+          'time': s.startTime,
+          'startPct': s.startPct,
+          'endPct': s.endPct,
+          'msg': msg,
+          'hpDelta': hpDelta,
+          'xpDelta': xpDelta,
+          'cardBg': cardBg,
+          'cardBorder': cardBorder,
+          'cardText': cardText,
+          'icon': icon,
+          'duration': durationStr,
+          'flavorText': flavorText,
+        };
+
+        localTimelineCards.insert(0, cardInfo);
       }
 
-      _weeklyStats.clear();
-      _weeklyStats.addAll(localWeeklyStats);
-      _dailyData.clear();
-      _dailyData.addAll(localDailyData);
+      final bool leveledUp = localRankIndex > _currentRankIndex;
+      final bool perfectChargeHappened = localGlobalMetrics.perfectCharges > _globalMetrics.perfectCharges;
+      final bool xpReached100 = (localXp >= 100 && _xp < 100);
+      final bool hasPenalty = localGlobalMetrics.overcharges > _globalMetrics.overcharges ||
+                              localGlobalMetrics.criticalStarts > _globalMetrics.criticalStarts;
 
-      _globalMetrics.total = localGlobalMetrics.total;
-      _globalMetrics.overcharges = localGlobalMetrics.overcharges;
-      _globalMetrics.criticalStarts = localGlobalMetrics.criticalStarts;
-      _globalMetrics.perfectCharges = localGlobalMetrics.perfectCharges;
-      _globalMetrics.totalXpEarned = localGlobalMetrics.totalXpEarned;
+      setState(() {
+        _hp = localHp;
+        _xp = localXp;
+        _currentRankIndex = localRankIndex;
+        _simFinalHp = localHp;
+        _simFinalXp = localXp;
+        _simFinalRankIndex = localRankIndex;
 
-      _timelineCards.clear();
-      _timelineCards.addAll(localTimelineCards);
+        if (leveledUp || perfectChargeHappened || xpReached100) {
+          _petGlowTrigger++;
+        }
 
-      _simulatedWeeksCount = localSimulatedWeeksCount;
-      _isSimulating = false;
-      _currentTab = "tab-stats"; // directly swap to Receipts/Stats tab
-      _expandedCardIndices.clear(); // reset expanded state on reload
-    });
+        _weeklyStats.clear();
+        _weeklyStats.addAll(localWeeklyStats);
+        _dailyData.clear();
+        _dailyData.addAll(localDailyData);
 
-    final finalRankName = _getRankName(_currentRankIndex);
-    _spawnFloatingText(
-      _loc.translate("final_rank", defaultVal: "Final Rank: {rank_name}").replaceAll("{rank_name}", finalRankName),
-      NeoColors.rpgGold,
-    );
+        _globalMetrics.total = localGlobalMetrics.total;
+        _globalMetrics.overcharges = localGlobalMetrics.overcharges;
+        _globalMetrics.criticalStarts = localGlobalMetrics.criticalStarts;
+        _globalMetrics.perfectCharges = localGlobalMetrics.perfectCharges;
+        _globalMetrics.totalXpEarned = localGlobalMetrics.totalXpEarned;
 
-    if (leveledUp || hasPenalty) {
-      _triggerScreenShake();
+        _timelineCards.clear();
+        _timelineCards.addAll(localTimelineCards);
+
+        _simulatedWeeksCount = localWeeksCount;
+        _expandedCardIndices.clear();
+      });
+
+      final finalRankName = _getRankName(_currentRankIndex);
+      _spawnFloatingText(
+        _loc.translate("final_rank", defaultVal: "Final Rank: {rank_name}").replaceAll("{rank_name}", finalRankName),
+        NeoColors.rpgGold,
+      );
+
+      if (leveledUp || hasPenalty) {
+        _triggerScreenShake();
+      }
+    } else {
+      setState(() {
+        _hp = 100;
+        _xp = 0;
+        _currentRankIndex = 0;
+        _simFinalHp = 100;
+        _simFinalXp = 0;
+        _simFinalRankIndex = 0;
+        _weeklyStats.clear();
+        _dailyData.clear();
+        _globalMetrics.total = 0;
+        _globalMetrics.overcharges = 0;
+        _globalMetrics.criticalStarts = 0;
+        _globalMetrics.perfectCharges = 0;
+        _globalMetrics.totalXpEarned = 0;
+        _timelineCards.clear();
+        _simulatedWeeksCount = 0;
+        _expandedCardIndices.clear();
+      });
     }
   }
 
@@ -704,6 +973,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
               children: [
                 // Header section
                 _buildHeader(),
+                _buildSimulationBanner(),
 
                 // Scrollable body containing Pet Stage and Tabs content
                 Expanded(
@@ -712,7 +982,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                     physics: const ClampingScrollPhysics(),
                     child: Column(
                       children: [
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 38),
                         // Pet Arena Stage
                         PetRenderer(
                           species: _currentSpecies,
@@ -723,6 +993,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                           speechVisible: _speechVisible,
                           floatingTexts: _floatingTexts,
                           glowTrigger: _petGlowTrigger,
+                          isCharging: _isCharging,
                         ),
                         const SizedBox(height: 12),
 
@@ -974,6 +1245,40 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
           ],
         ),
+        if (_isCharging) ...[
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            decoration: BoxDecoration(
+              color: const Color(0xFF2A9D8F),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: NeoColors.rpgText, width: 2.0),
+              boxShadow: const [
+                BoxShadow(
+                  color: NeoColors.rpgText,
+                  offset: Offset(2, 2),
+                  blurRadius: 0,
+                ),
+              ],
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.bolt, color: Colors.white, size: 16),
+                SizedBox(width: 4),
+                Text(
+                  "⚡ SPARKY IS CHARGING...",
+                  style: TextStyle(
+                    fontFamily: 'Space Grotesk',
+                    fontWeight: FontWeight.w900,
+                    fontSize: 11.0,
+                    color: Colors.white,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -1313,74 +1618,185 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Import CSV header row
+        // Mode Selector: Real Tracking vs Simulation Mode
         Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Row(
-              children: [
-                const Icon(Icons.dataset, color: NeoColors.rpgText),
-                const SizedBox(width: 8),
-                Text(
-                  csvImportText.toUpperCase(),
-                  style: const TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.bold, fontSize: 13.0, color: NeoColors.rpgText),
-                ),
-              ],
-            ),
-            // Load CSV Button picker
-            NeoButton(
-              backgroundColor: NeoColors.rpgSurface,
-              borderColor: NeoColors.rpgText,
-              shadowColor: NeoColors.rpgText,
-              padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 6.0),
-              onPressed: _pickCSV,
-              child: Row(
-                children: [
-                  const Icon(Icons.upload_file, color: Colors.white, size: 14.0),
-                  const SizedBox(width: 4),
-                  Text(
-                    loadCsvText.toUpperCase(),
-                    style: const TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.w900, color: Colors.white, fontSize: 10.0),
+            Expanded(
+              child: GestureDetector(
+                onTap: () => _toggleSimulationMode(false),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  decoration: BoxDecoration(
+                    color: !_useSimulation ? NeoColors.primary : Colors.white,
+                    borderRadius: const BorderRadius.horizontal(left: Radius.circular(8)),
+                    border: Border.all(color: NeoColors.rpgText, width: 2.0),
                   ),
-                ],
+                  child: Text(
+                    "REAL TRACKING",
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontFamily: 'Space Grotesk',
+                      fontWeight: FontWeight.w900,
+                      fontSize: 11.0,
+                      color: !_useSimulation ? Colors.white : NeoColors.rpgText,
+                    ),
+                  ),
+                ),
               ),
-
+            ),
+            Expanded(
+              child: GestureDetector(
+                onTap: () => _toggleSimulationMode(true),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  decoration: BoxDecoration(
+                    color: _useSimulation ? NeoColors.primary : Colors.white,
+                    borderRadius: const BorderRadius.horizontal(right: Radius.circular(8)),
+                    border: Border.all(color: NeoColors.rpgText, width: 2.0),
+                  ),
+                  child: Text(
+                    "SIMULATION",
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontFamily: 'Space Grotesk',
+                      fontWeight: FontWeight.w900,
+                      fontSize: 11.0,
+                      color: _useSimulation ? Colors.white : NeoColors.rpgText,
+                    ),
+                  ),
+                ),
+              ),
             ),
           ],
         ),
         const SizedBox(height: 16),
 
-        // Log Inputs and presets simulation lists
-        _buildSimLogPreset(
-          index: 1,
-          label: _loc.translate('log_1_label', defaultVal: 'Log 1 — Normal Charging'),
-          btnText: _loc.translate('run_sim_log_1', defaultVal: 'Run Simulation — Log 1'),
-          controller: _csvInputController,
-          themeColor: NeoColors.rpgText,
-        ),
-        _buildDividerOr(),
-        _buildSimLogPreset(
-          index: 2,
-          label: _loc.translate('log_2_label', defaultVal: 'Log 2 — Bad Charging'),
-          btnText: _loc.translate('run_sim_log_2', defaultVal: 'Run Simulation — Log 2'),
-          controller: _csvInputController2,
-          themeColor: NeoColors.rpgMuted,
-        ),
-        _buildDividerOr(),
-        _buildSimLogPreset(
-          index: 3,
-          label: _loc.translate('log_3_label', defaultVal: 'Log 3 — Good Charging'),
-          btnText: _loc.translate('run_sim_log_3', defaultVal: 'Run Simulation — Log 3'),
-          controller: _csvInputController3,
-          themeColor: NeoColors.rpgAccent,
-        ),
+        if (_useSimulation) ...[
+          // Import CSV header row
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.dataset, color: NeoColors.rpgText),
+                  const SizedBox(width: 8),
+                  Text(
+                    csvImportText.toUpperCase(),
+                    style: const TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.bold, fontSize: 13.0, color: NeoColors.rpgText),
+                  ),
+                ],
+              ),
+              // Load CSV Button picker
+              NeoButton(
+                backgroundColor: NeoColors.rpgSurface,
+                borderColor: NeoColors.rpgText,
+                shadowColor: NeoColors.rpgText,
+                padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 6.0),
+                onPressed: _pickCSV,
+                child: Row(
+                  children: [
+                    const Icon(Icons.upload_file, color: Colors.white, size: 14.0),
+                    const SizedBox(width: 4),
+                    Text(
+                      loadCsvText.toUpperCase(),
+                      style: const TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.w900, color: Colors.white, fontSize: 10.0),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+
+          // Log Inputs and presets simulation lists
+          _buildSimLogPreset(
+            index: 1,
+            label: _loc.translate('log_1_label', defaultVal: 'Log 1 — Normal Charging'),
+            btnText: _loc.translate('run_sim_log_1', defaultVal: 'Run Simulation — Log 1'),
+            controller: _csvInputController,
+            themeColor: NeoColors.rpgText,
+          ),
+          _buildDividerOr(),
+          _buildSimLogPreset(
+            index: 2,
+            label: _loc.translate('log_2_label', defaultVal: 'Log 2 — Bad Charging'),
+            btnText: _loc.translate('run_sim_log_2', defaultVal: 'Run Simulation — Log 2'),
+            controller: _csvInputController2,
+            themeColor: NeoColors.rpgMuted,
+          ),
+          _buildDividerOr(),
+          _buildSimLogPreset(
+            index: 3,
+            label: _loc.translate('log_3_label', defaultVal: 'Log 3 — Good Charging'),
+            btnText: _loc.translate('run_sim_log_3', defaultVal: 'Run Simulation — Log 3'),
+            controller: _csvInputController3,
+            themeColor: NeoColors.rpgAccent,
+          ),
+        ] else ...[
+          // Real data header row
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.history, color: NeoColors.rpgText),
+                  SizedBox(width: 8),
+                  Text(
+                    "REAL CHARGE HISTORY",
+                    style: TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.bold, fontSize: 13.0, color: NeoColors.rpgText),
+                  ),
+                ],
+              ),
+              if (_timelineCards.isNotEmpty)
+                NeoButton(
+                  backgroundColor: NeoColors.rpgMuted,
+                  borderColor: NeoColors.rpgText,
+                  shadowColor: NeoColors.rpgText,
+                  padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 6.0),
+                  onPressed: () async {
+                    await BatteryDb().clearChargeSessions();
+                    await _loadRealStats();
+                    _spawnFloatingText("Logs Cleared!", NeoColors.rpgMuted);
+                  },
+                  child: const Text(
+                    "CLEAR ALL",
+                    style: TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.w900, color: Colors.white, fontSize: 10.0),
+                  ),
+                ),
+            ],
+          ),
+          if (_timelineCards.isEmpty) ...[
+            const SizedBox(height: 32),
+            Container(
+              padding: const EdgeInsets.all(24.0),
+              decoration: BoxDecoration(
+                color: NeoColors.rpgBg,
+                borderRadius: BorderRadius.circular(12.0),
+                border: Border.all(color: NeoColors.rpgText, width: 2.0),
+              ),
+              child: const Center(
+                child: Text(
+                  "No charging sessions recorded yet.\nPlug in your device to log real-time data!",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontFamily: 'Space Grotesk',
+                    fontWeight: FontWeight.bold,
+                    color: NeoColors.rpgText,
+                    fontSize: 12.0,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ],
 
         // Running logs Cards timeline list
         if (_timelineCards.isNotEmpty) ...[
           const SizedBox(height: 20),
-          const Text(
-            "SIMULATION LOGS",
-            style: TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.bold, fontSize: 11.5, color: NeoColors.rpgText),
+          Text(
+            _useSimulation ? "SIMULATION LOGS" : "REAL CHARGING SESSIONS",
+            style: const TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.bold, fontSize: 11.5, color: NeoColors.rpgText),
           ),
           const Divider(color: Colors.black26),
           const SizedBox(height: 6),

@@ -339,25 +339,7 @@ class _HeatmapWidgetState extends State<HeatmapWidget> {
 
     // Grid elements count = 1 label + 7 days = 8 columns
     final List<Widget> gridItems = [];
-
-    // Header Row: corner empty space, then day labels M, T, W, T, F, S, S (matching screenshot)
-    gridItems.add(const SizedBox.shrink());
     final dayLabels = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
-    for (var label in dayLabels) {
-      gridItems.add(
-        Center(
-          child: Text(
-            label,
-            style: TextStyle(
-              fontFamily: 'Space Grotesk',
-              fontSize: 9.0,
-              fontWeight: FontWeight.bold,
-              color: NeoColors.rpgText.withValues(alpha: 0.5),
-            ),
-          ),
-        ),
-      );
-    }
 
     // Rows: Week row labels on left, then 7 day cells
     for (int weekIdx = 0; weekIdx < weeks.length; weekIdx++) {
@@ -434,14 +416,13 @@ class _HeatmapWidgetState extends State<HeatmapWidget> {
         ),
         const SizedBox(height: 12),
 
-        // Heatmap toggles
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          alignment: WrapAlignment.center,
           children: [
             _buildToggleButton('sessions', loc.translate('heatmap_sessions', defaultVal: 'Sessions'), Icons.format_list_numbered, Colors.blue),
-            const SizedBox(width: 6),
             _buildToggleButton('quality', loc.translate('heatmap_quality', defaultVal: 'Quality'), Icons.star, Colors.amber),
-            const SizedBox(width: 6),
             _buildToggleButton('score', loc.translate('heatmap_score', defaultVal: 'Score'), Icons.bar_chart, Colors.green),
           ],
         ),
@@ -451,72 +432,112 @@ class _HeatmapWidgetState extends State<HeatmapWidget> {
           backgroundColor: NeoColors.rpgBg,
           borderWidth: 3.0,
           shadowOffset: const Offset(2, 2),
-          padding: const EdgeInsets.fromLTRB(8, 8, 8, 6),
+          padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
           child: Column(
             children: [
-              SizedBox(
-                width: double.infinity,
-                child: GridView.builder(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  itemCount: gridItems.length,
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 8,
-                    mainAxisSpacing: 4,
-                    crossAxisSpacing: 4,
-                    childAspectRatio: 1,
-                  ),
-                  itemBuilder: (context, index) {
-                    return gridItems[index];
-                  },
-                ),
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final totalWidth = constraints.maxWidth;
+                  final cellSize = (totalWidth - 28) / 8;
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.start,
+                        children: [
+                          SizedBox(width: cellSize + 4),
+                          for (int i = 0; i < 7; i++) ...[
+                            SizedBox(
+                              width: cellSize,
+                              child: Center(
+                                child: Text(
+                                  dayLabels[i],
+                                  style: TextStyle(
+                                    fontFamily: 'Space Grotesk',
+                                    fontSize: 9.0,
+                                    fontWeight: FontWeight.bold,
+                                    color: NeoColors.rpgText.withValues(alpha: 0.5),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            if (i < 6) const SizedBox(width: 4),
+                          ],
+                        ],
+                      ),
+                      const SizedBox(height: 3),
+                      GridView.builder(
+                        padding: EdgeInsets.zero,
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemCount: gridItems.length,
+                        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 8,
+                          mainAxisSpacing: 4,
+                          crossAxisSpacing: 4,
+                          childAspectRatio: 1,
+                        ),
+                        itemBuilder: (context, index) {
+                          return gridItems[index];
+                        },
+                      ),
+                    ],
+                  );
+                },
               ),
 
               const SizedBox(height: 10),
               // Legend & Summary Row
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Row(
-                    children: [
-                      Text(
-                        loc.translate('heatmap_less', defaultVal: 'Less'),
-                        style: TextStyle(
-                          fontFamily: 'Space Grotesk',
-                          fontSize: 9.0,
-                          fontWeight: FontWeight.bold,
-                          color: NeoColors.rpgText.withValues(alpha: 0.6),
+              SizedBox(
+                width: double.infinity,
+                child: Wrap(
+                  alignment: WrapAlignment.spaceBetween,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 8,
+                  runSpacing: 6,
+                  children: [
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          loc.translate('heatmap_less', defaultVal: 'Less'),
+                          style: TextStyle(
+                            fontFamily: 'Space Grotesk',
+                            fontSize: 9.0,
+                            fontWeight: FontWeight.bold,
+                            color: NeoColors.rpgText.withValues(alpha: 0.6),
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 4),
-                      _buildLegendSwatch(const Color(0xFF9CA3AF)),
-                      _buildLegendSwatch(const Color(0xFFE07A5F)),
-                      _buildLegendSwatch(const Color(0xFFF9A215)),
-                      _buildLegendSwatch(const Color(0xFF81B29A)),
-                      _buildLegendSwatch(const Color(0xFFFACC15)),
-                      const SizedBox(width: 4),
-                      Text(
-                        loc.translate('heatmap_more', defaultVal: 'More'),
-                        style: TextStyle(
-                          fontFamily: 'Space Grotesk',
-                          fontSize: 9.0,
-                          fontWeight: FontWeight.bold,
-                          color: NeoColors.rpgText.withValues(alpha: 0.6),
+                        const SizedBox(width: 4),
+                        _buildLegendSwatch(const Color(0xFF9CA3AF)),
+                        _buildLegendSwatch(const Color(0xFFE07A5F)),
+                        _buildLegendSwatch(const Color(0xFFF9A215)),
+                        _buildLegendSwatch(const Color(0xFF81B29A)),
+                        _buildLegendSwatch(const Color(0xFFFACC15)),
+                        const SizedBox(width: 4),
+                        Text(
+                          loc.translate('heatmap_more', defaultVal: 'More'),
+                          style: TextStyle(
+                            fontFamily: 'Space Grotesk',
+                            fontSize: 9.0,
+                            fontWeight: FontWeight.bold,
+                            color: NeoColors.rpgText.withValues(alpha: 0.6),
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
-
-                  Text(
-                    "$totalDays ACTIVE DAYS · $totalSessions SESSIONS",
-                    style: TextStyle(
-                      fontFamily: 'Space Grotesk',
-                      fontSize: 9.0,
-                      fontWeight: FontWeight.bold,
-                      color: NeoColors.rpgText.withValues(alpha: 0.6),
+                      ],
                     ),
-                  ),
-                ],
+
+                    Text(
+                      "$totalDays ACTIVE DAYS · $totalSessions SESSIONS",
+                      style: TextStyle(
+                        fontFamily: 'Space Grotesk',
+                        fontSize: 9.0,
+                        fontWeight: FontWeight.bold,
+                        color: NeoColors.rpgText.withValues(alpha: 0.6),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
