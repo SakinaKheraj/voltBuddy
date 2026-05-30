@@ -1,9 +1,7 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:file_picker/file_picker.dart';
 
 import 'models/simulation_models.dart';
 
@@ -90,13 +88,11 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   final GlobalMetrics _globalMetrics = GlobalMetrics();
   int _simulatedWeeksCount = 0;
 
-  // Active/Simulating Sessions Timeline Cards
+  // Active Sessions Timeline Cards
   final List<Map<String, dynamic>> _timelineCards = [];
-  bool _isSimulating = false;
 
   // Real-Time Tracking State
   bool _isCharging = false;
-  bool _useSimulation = false;
   StreamSubscription<BatteryState>? _batterySubscription;
   final Battery _battery = Battery();
 
@@ -106,11 +102,6 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   // Screen shake variables
   late AnimationController _screenShakeController;
   late Animation<double> _screenShakeAnimation;
-
-  // Text fields controllers for logs
-  final TextEditingController _csvInputController = TextEditingController(text: _presetLog1);
-  final TextEditingController _csvInputController2 = TextEditingController(text: _presetLog2);
-  final TextEditingController _csvInputController3 = TextEditingController(text: _presetLog3);
 
   final ScrollController _timelineScrollController = ScrollController();
   final ScrollController _mainScrollController = ScrollController();
@@ -150,9 +141,6 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     WidgetsBinding.instance.removeObserver(this);
     _batterySubscription?.cancel();
     _speechTimer?.cancel();
-    _csvInputController.dispose();
-    _csvInputController2.dispose();
-    _csvInputController3.dispose();
     _timelineScrollController.dispose();
     _mainScrollController.dispose();
     _screenShakeController.dispose();
@@ -345,7 +333,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
   Future<void> _loadRealStats() async {
     final sessions = await BatteryDb().getAllChargeSessions();
-    _applySessionsToState(sessions, isSimulation: false);
+    _applySessionsToState(sessions);
   }
 
   @override
@@ -435,9 +423,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
         _spawnFloatingText("Charged to $currentLevel%!", const Color(0xFF2A9D8F));
         _showSpeechBubble("Charged! +${currentLevel - offlineStartPct}% battery.");
 
-        if (!_useSimulation) {
-          await _loadRealStats();
-        }
+        await _loadRealStats();
       }
 
       if (isNowCharging) {
@@ -503,9 +489,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
           _spawnFloatingText("Charged to $currentLevel%!", const Color(0xFF2A9D8F));
           _showSpeechBubble("Charged! +${currentLevel - startPct}% battery.");
 
-          if (!_useSimulation) {
-            await _loadRealStats();
-          }
+          await _loadRealStats();
         }
       }
     } catch (e) {
@@ -513,113 +497,9 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     }
   }
 
-  void _toggleSimulationMode(bool value) async {
-    setState(() {
-      _useSimulation = value;
-    });
-    if (_useSimulation) {
-      _runSimulation(_csvInputController.text);
-    } else {
-      await _loadRealStats();
-    }
-  }
+  // --- SIMULATION LOGIC REMOVED ---
 
-  Widget _buildSimulationBanner() {
-    if (!_useSimulation) return const SizedBox.shrink();
-    return Container(
-      width: double.infinity,
-      color: NeoColors.primary,
-      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          const Expanded(
-            child: Row(
-              children: [
-                Icon(Icons.warning, color: Colors.white, size: 18),
-                SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    "SIMULATION MODE ACTIVE",
-                    style: TextStyle(
-                      fontFamily: 'Space Grotesk',
-                      fontWeight: FontWeight.bold,
-                      fontSize: 12.0,
-                      color: Colors.white,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          GestureDetector(
-            onTap: () => _toggleSimulationMode(false),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: NeoColors.rpgText, width: 1.5),
-              ),
-              child: const Text(
-                "RESTORE REAL DATA",
-                style: TextStyle(
-                  fontFamily: 'Space Grotesk',
-                  fontWeight: FontWeight.w900,
-                  fontSize: 10.0,
-                  color: NeoColors.rpgText,
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // --- SIMULATION LOGIC ---
-
-  void _runSimulation(String text) {
-    if (_isSimulating) return;
-
-    final lines = text.trim().split("\n");
-    if (lines.length < 2) return;
-
-    List<ChargeSession> sessions = [];
-    LogEntry? pendingConnect;
-
-    for (int i = 1; i < lines.length; i++) {
-      if (lines[i].trim().isEmpty) continue;
-      try {
-        final entry = LogEntry.fromCsvLine(lines[i]);
-        if (entry.eventType == ChargeEventType.powerConnected) {
-          pendingConnect = entry;
-        } else if (entry.eventType == ChargeEventType.powerDisconnected && pendingConnect != null) {
-          sessions.add(ChargeSession(
-            startPct: pendingConnect.percentage,
-            startDate: pendingConnect.date,
-            startTime: pendingConnect.time,
-            endPct: entry.percentage,
-            endDate: entry.date,
-            endTime: entry.time,
-          ));
-          pendingConnect = null;
-        }
-      } catch (e) {
-        print('Parsing error at line $i: $e');
-      }
-    }
-
-    if (sessions.isEmpty) return;
-
-    _applySessionsToState(sessions, isSimulation: true);
-
-    setState(() {
-      _currentTab = "tab-stats";
-    });
-  }
-
-  void _applySessionsToState(List<ChargeSession> sessions, {required bool isSimulation}) {
+  void _applySessionsToState(List<ChargeSession> sessions) {
     int localHp = 100;
     int localXp = 0;
     int localRankIndex = 0;
@@ -839,27 +719,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
 
 
-  // Better implementation of CSV picking:
-  Future<void> _pickCSV() async {
-    try {
-      FileResultPicker.pickCSVFile((content) {
-        if (content != null) {
-          setState(() {
-            _csvInputController.text = content;
-            _csvInputController2.text = content;
-            _csvInputController3.text = content;
-            _timelineCards.clear();
-          });
-          _spawnFloatingText(
-            _loc.translate('alert_csv_loaded', defaultVal: 'CSV Loaded!'),
-            NeoColors.rpgSurface,
-          );
-        }
-      });
-    } catch (e) {
-      print('File picker error: $e');
-    }
-  }
+
 
   void _triggerScreenShake() {
     _screenShakeController.forward(from: 0.0);
@@ -973,7 +833,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
               children: [
                 // Header section
                 _buildHeader(),
-                _buildSimulationBanner(),
+
 
                 // Scrollable body containing Pet Stage and Tabs content
                 Expanded(
@@ -1079,35 +939,29 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
           Row(
             children: [
               // Language Select Menu
-              Container(
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(12.0),
-                  border: Border.all(color: NeoColors.rpgText, width: 2.5),
-                  boxShadow: const [
-                    BoxShadow(
+              NeoCard(
+                backgroundColor: Colors.white,
+                borderWidth: 2.5,
+                borderRadius: 12.0,
+                shadowOffset: const Offset(2, 2),
+                padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<String>(
+                    value: _currentLanguage,
+                    isDense: true,
+                    icon: const Icon(Icons.arrow_drop_down, color: NeoColors.rpgText, size: 16.0),
+                    style: const TextStyle(
+                      fontFamily: 'Space Grotesk',
+                      fontWeight: FontWeight.bold,
+                      fontSize: 10.5,
                       color: NeoColors.rpgText,
-                      offset: Offset(2, 2),
-                      blurRadius: 0,
                     ),
-                  ],
-                ),
-                padding: const EdgeInsets.symmetric(horizontal: 8.0),
-                child: DropdownButton<String>(
-                  value: _currentLanguage,
-                  underline: const SizedBox.shrink(),
-                  icon: const Icon(Icons.arrow_drop_down, color: NeoColors.rpgText),
-                  style: const TextStyle(
-                    fontFamily: 'Space Grotesk',
-                    fontWeight: FontWeight.bold,
-                    fontSize: 10.5,
-                    color: NeoColors.rpgText,
+                    onChanged: _changeLanguage,
+                    items: const [
+                      DropdownMenuItem(value: "regular", child: Text("REGULAR")),
+                      DropdownMenuItem(value: "genz", child: Text("GEN Z")),
+                    ],
                   ),
-                  onChanged: _changeLanguage,
-                  items: const [
-                    DropdownMenuItem(value: "regular", child: Text("REGULAR")),
-                    DropdownMenuItem(value: "genz", child: Text("GEN Z")),
-                  ],
                 ),
               ),
               const SizedBox(width: 8),
@@ -1118,7 +972,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                 borderWidth: 2.5,
                 borderRadius: 12.0,
                 shadowOffset: const Offset(2, 2),
-                padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 6.0),
+                padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 4.0),
                 child: Row(
                   children: [
                     const Icon(Icons.calendar_month, color: NeoColors.rpgSurface, size: 15.0),
@@ -1612,191 +1466,71 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   }
 
   Widget _buildLogsTab() {
-    final csvImportText = _loc.translate('csv_import', defaultVal: 'CSV Import');
-    final loadCsvText = _loc.translate('load_csv', defaultVal: 'Load CSV');
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Mode Selector: Real Tracking vs Simulation Mode
+        // Real data header row
         Row(
-          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Expanded(
-              child: GestureDetector(
-                onTap: () => _toggleSimulationMode(false),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  decoration: BoxDecoration(
-                    color: !_useSimulation ? NeoColors.primary : Colors.white,
-                    borderRadius: const BorderRadius.horizontal(left: Radius.circular(8)),
-                    border: Border.all(color: NeoColors.rpgText, width: 2.0),
-                  ),
-                  child: Text(
-                    "REAL TRACKING",
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontFamily: 'Space Grotesk',
-                      fontWeight: FontWeight.w900,
-                      fontSize: 11.0,
-                      color: !_useSimulation ? Colors.white : NeoColors.rpgText,
-                    ),
-                  ),
+            const Row(
+              children: [
+                Icon(Icons.history, color: NeoColors.rpgText),
+                SizedBox(width: 8),
+                Text(
+                  "REAL CHARGE HISTORY",
+                  style: TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.bold, fontSize: 13.0, color: NeoColors.rpgText),
                 ),
-              ),
+              ],
             ),
-            Expanded(
-              child: GestureDetector(
-                onTap: () => _toggleSimulationMode(true),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  decoration: BoxDecoration(
-                    color: _useSimulation ? NeoColors.primary : Colors.white,
-                    borderRadius: const BorderRadius.horizontal(right: Radius.circular(8)),
-                    border: Border.all(color: NeoColors.rpgText, width: 2.0),
-                  ),
-                  child: Text(
-                    "SIMULATION",
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontFamily: 'Space Grotesk',
-                      fontWeight: FontWeight.w900,
-                      fontSize: 11.0,
-                      color: _useSimulation ? Colors.white : NeoColors.rpgText,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 16),
-
-        if (_useSimulation) ...[
-          // Import CSV header row
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
-                children: [
-                  const Icon(Icons.dataset, color: NeoColors.rpgText),
-                  const SizedBox(width: 8),
-                  Text(
-                    csvImportText.toUpperCase(),
-                    style: const TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.bold, fontSize: 13.0, color: NeoColors.rpgText),
-                  ),
-                ],
-              ),
-              // Load CSV Button picker
+            if (_timelineCards.isNotEmpty)
               NeoButton(
-                backgroundColor: NeoColors.rpgSurface,
+                backgroundColor: NeoColors.rpgMuted,
                 borderColor: NeoColors.rpgText,
                 shadowColor: NeoColors.rpgText,
                 padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 6.0),
-                onPressed: _pickCSV,
-                child: Row(
-                  children: [
-                    const Icon(Icons.upload_file, color: Colors.white, size: 14.0),
-                    const SizedBox(width: 4),
-                    Text(
-                      loadCsvText.toUpperCase(),
-                      style: const TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.w900, color: Colors.white, fontSize: 10.0),
-                    ),
-                  ],
+                onPressed: () async {
+                  await BatteryDb().clearChargeSessions();
+                  await _loadRealStats();
+                  _spawnFloatingText("Logs Cleared!", NeoColors.rpgMuted);
+                },
+                child: const Text(
+                  "CLEAR ALL",
+                  style: TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.w900, color: Colors.white, fontSize: 10.0),
                 ),
               ),
-            ],
-          ),
-          const SizedBox(height: 16),
-
-          // Log Inputs and presets simulation lists
-          _buildSimLogPreset(
-            index: 1,
-            label: _loc.translate('log_1_label', defaultVal: 'Log 1 — Normal Charging'),
-            btnText: _loc.translate('run_sim_log_1', defaultVal: 'Run Simulation — Log 1'),
-            controller: _csvInputController,
-            themeColor: NeoColors.rpgText,
-          ),
-          _buildDividerOr(),
-          _buildSimLogPreset(
-            index: 2,
-            label: _loc.translate('log_2_label', defaultVal: 'Log 2 — Bad Charging'),
-            btnText: _loc.translate('run_sim_log_2', defaultVal: 'Run Simulation — Log 2'),
-            controller: _csvInputController2,
-            themeColor: NeoColors.rpgMuted,
-          ),
-          _buildDividerOr(),
-          _buildSimLogPreset(
-            index: 3,
-            label: _loc.translate('log_3_label', defaultVal: 'Log 3 — Good Charging'),
-            btnText: _loc.translate('run_sim_log_3', defaultVal: 'Run Simulation — Log 3'),
-            controller: _csvInputController3,
-            themeColor: NeoColors.rpgAccent,
-          ),
-        ] else ...[
-          // Real data header row
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Row(
-                children: [
-                  Icon(Icons.history, color: NeoColors.rpgText),
-                  SizedBox(width: 8),
-                  Text(
-                    "REAL CHARGE HISTORY",
-                    style: TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.bold, fontSize: 13.0, color: NeoColors.rpgText),
-                  ),
-                ],
-              ),
-              if (_timelineCards.isNotEmpty)
-                NeoButton(
-                  backgroundColor: NeoColors.rpgMuted,
-                  borderColor: NeoColors.rpgText,
-                  shadowColor: NeoColors.rpgText,
-                  padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 6.0),
-                  onPressed: () async {
-                    await BatteryDb().clearChargeSessions();
-                    await _loadRealStats();
-                    _spawnFloatingText("Logs Cleared!", NeoColors.rpgMuted);
-                  },
-                  child: const Text(
-                    "CLEAR ALL",
-                    style: TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.w900, color: Colors.white, fontSize: 10.0),
-                  ),
-                ),
-            ],
-          ),
-          if (_timelineCards.isEmpty) ...[
-            const SizedBox(height: 32),
-            Container(
-              padding: const EdgeInsets.all(24.0),
-              decoration: BoxDecoration(
-                color: NeoColors.rpgBg,
-                borderRadius: BorderRadius.circular(12.0),
-                border: Border.all(color: NeoColors.rpgText, width: 2.0),
-              ),
-              child: const Center(
-                child: Text(
-                  "No charging sessions recorded yet.\nPlug in your device to log real-time data!",
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontFamily: 'Space Grotesk',
-                    fontWeight: FontWeight.bold,
-                    color: NeoColors.rpgText,
-                    fontSize: 12.0,
-                  ),
+          ],
+        ),
+        if (_timelineCards.isEmpty) ...[
+          const SizedBox(height: 32),
+          Container(
+            padding: const EdgeInsets.all(24.0),
+            decoration: BoxDecoration(
+              color: NeoColors.rpgBg,
+              borderRadius: BorderRadius.circular(12.0),
+              border: Border.all(color: NeoColors.rpgText, width: 2.0),
+            ),
+            child: const Center(
+              child: Text(
+                "No charging sessions recorded yet.\nPlug in your device to log real-time data!",
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontFamily: 'Space Grotesk',
+                  fontWeight: FontWeight.bold,
+                  color: NeoColors.rpgText,
+                  fontSize: 12.0,
                 ),
               ),
             ),
-          ],
+          ),
         ],
 
         // Running logs Cards timeline list
         if (_timelineCards.isNotEmpty) ...[
           const SizedBox(height: 20),
-          Text(
-            _useSimulation ? "SIMULATION LOGS" : "REAL CHARGING SESSIONS",
-            style: const TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.bold, fontSize: 11.5, color: NeoColors.rpgText),
+          const Text(
+            "REAL CHARGING SESSIONS",
+            style: TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.bold, fontSize: 11.5, color: NeoColors.rpgText),
           ),
           const Divider(color: Colors.black26),
           const SizedBox(height: 6),
@@ -1804,6 +1538,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
             controller: _timelineScrollController,
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
+            padding: EdgeInsets.zero,
             itemCount: _timelineCards.length,
             itemBuilder: (context, idx) {
               final card = _timelineCards[idx];
@@ -1968,103 +1703,6 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     );
   }
 
-  Widget _buildSimLogPreset({
-    required int index,
-    required String label,
-    required String btnText,
-    required TextEditingController controller,
-    required Color themeColor,
-  }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Row(
-          children: [
-            Container(
-              width: 20,
-              height: 20,
-              decoration: BoxDecoration(
-                color: themeColor,
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: Center(
-                child: Text(
-                  "$index",
-                  style: const TextStyle(color: Colors.white, fontSize: 10.0, fontWeight: FontWeight.bold),
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              label.toUpperCase(),
-              style: const TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.bold, fontSize: 11.5, color: NeoColors.rpgText),
-            ),
-          ],
-        ),
-        const SizedBox(height: 6),
-        Container(
-          height: 80,
-          decoration: BoxDecoration(
-            color: NeoColors.rpgBg,
-            borderRadius: BorderRadius.circular(12.0),
-            border: Border.all(color: NeoColors.rpgText, width: 2.0),
-          ),
-          padding: const EdgeInsets.all(8.0),
-          child: TextField(
-            controller: controller,
-            maxLines: null,
-            readOnly: true,
-            style: const TextStyle(fontFamily: 'Courier', fontSize: 9.0, color: NeoColors.rpgText),
-            decoration: const InputDecoration(border: InputBorder.none, contentPadding: EdgeInsets.zero),
-          ),
-        ),
-        const SizedBox(height: 6),
-        NeoButton(
-          backgroundColor: themeColor,
-          borderColor: NeoColors.rpgText,
-          shadowColor: NeoColors.rpgText,
-          onPressed: () => _runSimulation(controller.text),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.play_arrow, color: Colors.white),
-              const SizedBox(width: 6),
-              Text(
-                btnText.toUpperCase(),
-                style: const TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.w900, color: Colors.white, fontSize: 10.5),
-              ),
-            ],
-          ),
-
-        ),
-      ],
-    );
-  }
-
-  Widget _buildDividerOr() {
-    final orVibeText = _loc.translate('or_try', defaultVal: 'or try');
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 12.0),
-      child: Row(
-        children: [
-          Expanded(child: Container(height: 1.5, color: NeoColors.rpgText.withOpacity(0.2))),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10.0),
-            child: Text(
-              orVibeText.toUpperCase(),
-              style: TextStyle(
-                fontFamily: 'Space Grotesk',
-                fontSize: 9.5,
-                fontWeight: FontWeight.bold,
-                color: NeoColors.rpgText.withOpacity(0.4),
-              ),
-            ),
-          ),
-          Expanded(child: Container(height: 1.5, color: NeoColors.rpgText.withOpacity(0.2))),
-        ],
-      ),
-    );
-  }
 
   Widget _buildSandboxTab() {
     final flexProgTitle = _loc.translate('tier_progression', defaultVal: '7-Tier Rank Progression');
@@ -2203,328 +1841,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
           ),
         ),
       ),
-
     );
-  }
-
-  // --- MOCK PRESET LOG STRINGS ---
-
-  static const String _presetLog1 = """user_id,event_type,percentage,date,time,timezone
-1,power_connected,2,2025-10-23,19:00:35,+05:30
-1,power_disconnected,8,2025-10-23,19:07:38,+05:30
-1,power_connected,7,2025-10-23,19:17:43,+05:30
-1,power_disconnected,41,2025-10-23,20:02:50,+05:30
-1,power_connected,35,2025-10-23,22:11:47,+05:30
-1,power_disconnected,100,2025-10-24,00:29:42,+05:30
-1,power_connected,51,2025-10-27,09:51:39,+05:30
-1,power_disconnected,91,2025-10-27,10:30:36,+05:30
-1,power_connected,46,2025-10-27,19:14:25,+05:30
-1,power_disconnected,77,2025-10-27,19:33:14,+05:30
-1,power_connected,47,2025-10-28,00:51:17,+05:30
-1,power_disconnected,100,2025-10-28,07:00:32,+05:30
-1,power_connected,40,2025-10-28,17:32:38,+05:30
-1,power_disconnected,64,2025-10-28,17:47:24,+05:30
-1,power_connected,33,2025-10-28,22:20:39,+05:30
-1,power_disconnected,65,2025-10-28,22:33:43,+05:30
-1,power_connected,62,2025-10-28,22:56:42,+05:30
-1,power_disconnected,65,2025-10-28,23:03:38,+05:30
-1,power_connected,49,2025-10-29,00:36:31,+05:30
-1,power_disconnected,100,2025-10-29,06:34:09,+05:30
-1,power_connected,42,2025-10-29,14:06:48,+05:30
-1,power_disconnected,44,2025-10-29,14:09:15,+05:30
-1,power_connected,42,2025-10-29,14:15:17,+05:30
-1,power_disconnected,42,2025-10-29,14:16:34,+05:30
-1,power_connected,28,2025-10-29,18:48:23,+05:30
-1,power_disconnected,80,2025-10-29,19:13:24,+05:30
-1,power_connected,8,2025-10-31,18:56:10,+05:30
-1,power_disconnected,100,2025-10-31,21:48:15,+05:30
-1,power_connected,38,2025-11-02,19:53:27,+05:30
-1,power_disconnected,100,2025-11-02,20:42:30,+05:30
-1,power_connected,70,2025-11-04,15:35:00,+05:30
-1,power_disconnected,70,2025-11-04,15:35:11,+05:30
-1,power_connected,3,2025-11-08,10:47:20,+05:30
-1,power_disconnected,22,2025-11-08,10:54:13,+05:30
-1,power_connected,1,2025-11-09,20:49:34,+05:30
-1,power_disconnected,39,2025-11-09,21:04:45,+05:30
-1,power_connected,37,2025-11-09,22:49:14,+05:30
-1,power_disconnected,80,2025-11-10,00:44:13,+05:30
-1,power_connected,17,2025-11-12,16:01:17,+05:30
-1,power_disconnected,80,2025-11-13,00:09:06,+05:30""";
-
-  static const String _presetLog2 = """user_id,event_type,percentage,date,time,timezone
-108,power_connected,29,2025-10-21,18:28:22,+05:30
-108,power_disconnected,47,2025-10-21,18:43:52,+05:30
-108,power_connected,47,2025-10-21,19:02:15,+05:30
-108,power_disconnected,60,2025-10-21,19:13:41,+05:30
-108,power_connected,32,2025-10-22,16:10:17,+05:30
-108,power_disconnected,90,2025-10-22,17:22:20,+05:30
-108,power_connected,32,2025-10-23,10:07:50,+05:30
-108,power_disconnected,100,2025-10-23,11:12:24,+05:30
-108,power_connected,23,2025-10-23,20:19:53,+05:30
-108,power_disconnected,100,2025-10-23,22:16:14,+05:30
-108,power_connected,23,2025-10-25,09:59:17,+05:30
-108,power_disconnected,100,2025-10-25,11:51:44,+05:30
-108,power_connected,48,2025-10-25,21:48:43,+05:30
-108,power_disconnected,100,2025-10-25,22:59:19,+05:30
-108,power_connected,31,2025-10-27,16:19:43,+05:30
-108,power_disconnected,100,2025-10-27,17:24:40,+05:30
-108,power_connected,28,2025-10-31,11:21:13,+05:30
-108,power_disconnected,100,2025-10-31,12:19:52,+05:30
-108,power_connected,27,2025-11-02,19:40:54,+05:30
-108,power_disconnected,100,2025-11-02,20:47:52,+05:30
-108,power_connected,31,2025-11-04,19:30:19,+05:30
-108,power_disconnected,96,2025-11-04,20:12:12,+05:30
-108,power_connected,34,2025-11-06,14:03:33,+05:30
-108,power_disconnected,97,2025-11-06,14:48:09,+05:30
-108,power_connected,21,2025-11-07,19:44:39,+05:30
-108,power_disconnected,100,2025-11-07,21:04:40,+05:30
-108,power_connected,19,2025-11-09,10:53:42,+05:30
-108,power_disconnected,100,2025-11-09,11:51:08,+05:30
-108,power_connected,32,2025-11-11,11:32:59,+05:30
-108,power_disconnected,100,2025-11-11,12:58:54,+05:30""";
-
-  static const String _presetLog3 = """user_id,event_type,percentage,date,time,timezone
-233,power_connected,18,2025-10-22,00:10:36,+05:30
-233,power_disconnected,35,2025-10-22,00:28:10,+05:30
-233,power_connected,16,2025-10-22,02:03:41,+05:30
-233,power_disconnected,50,2025-10-22,02:24:24,+05:30
-233,power_connected,33,2025-10-22,10:48:26,+05:30
-233,power_disconnected,46,2025-10-22,10:55:35,+05:30
-233,power_connected,27,2025-10-22,13:06:58,+05:30
-233,power_disconnected,54,2025-10-22,13:26:13,+05:30
-233,power_connected,48,2025-10-22,14:01:33,+05:30
-233,power_disconnected,73,2025-10-22,14:22:17,+05:30
-233,power_connected,22,2025-10-22,20:21:04,+05:30
-233,power_disconnected,28,2025-10-22,20:25:07,+05:30
-233,power_connected,22,2025-10-22,22:14:03,+05:30
-233,power_disconnected,47,2025-10-22,22:27:06,+05:30
-233,power_connected,35,2025-10-22,23:26:36,+05:30
-233,power_disconnected,58,2025-10-22,23:46:45,+05:30
-233,power_connected,55,2025-10-23,00:04:40,+05:30
-233,power_disconnected,57,2025-10-23,00:07:18,+05:30
-233,power_connected,23,2025-10-23,03:07:21,+05:30
-233,power_disconnected,32,2025-10-23,03:12:25,+05:30
-233,power_connected,23,2025-10-23,11:58:50,+05:30
-233,power_disconnected,45,2025-10-23,12:16:00,+05:30
-233,power_connected,40,2025-10-23,12:40:57,+05:30
-233,power_disconnected,58,2025-10-23,12:52:36,+05:30
-233,power_connected,42,2025-10-23,14:30:31,+05:30
-233,power_disconnected,51,2025-10-23,14:39:35,+05:30
-233,power_connected,34,2025-10-23,16:11:42,+05:30
-233,power_disconnected,51,2025-10-23,16:25:47,+05:30
-233,power_connected,17,2025-10-23,20:01:01,+05:30
-233,power_disconnected,43,2025-10-23,20:19:15,+05:30
-233,power_connected,28,2025-10-23,21:54:14,+05:30
-233,power_disconnected,51,2025-10-23,22:14:26,+05:30
-233,power_connected,17,2025-10-24,11:28:40,+05:30
-233,power_disconnected,62,2025-10-24,12:01:49,+05:30
-233,power_connected,56,2025-10-24,12:50:44,+05:30
-233,power_disconnected,69,2025-10-24,13:01:31,+05:30
-233,power_connected,49,2025-10-24,14:54:10,+05:30
-233,power_disconnected,83,2025-10-24,15:21:31,+05:30
-233,power_connected,53,2025-10-24,19:48:03,+05:30
-233,power_disconnected,90,2025-10-24,20:19:14,+05:30
-233,power_connected,19,2025-10-25,10:38:05,+05:30
-233,power_disconnected,39,2025-10-25,10:51:59,+05:30
-233,power_connected,29,2025-10-25,13:48:34,+05:30
-233,power_disconnected,72,2025-10-25,14:22:20,+05:30
-233,power_connected,23,2025-10-25,18:49:06,+05:30
-233,power_disconnected,45,2025-10-25,19:06:24,+05:30
-233,power_connected,25,2025-10-25,23:03:43,+05:30
-233,power_disconnected,29,2025-10-25,23:06:12,+05:30
-233,power_connected,19,2025-10-25,23:54:14,+05:30
-233,power_disconnected,39,2025-10-26,00:10:47,+05:30
-233,power_connected,27,2025-10-26,01:18:58,+05:30
-233,power_disconnected,55,2025-10-26,01:44:06,+05:30
-233,power_connected,16,2025-10-26,12:24:54,+05:30
-233,power_disconnected,67,2025-10-26,13:07:53,+05:30
-233,power_connected,62,2025-10-26,13:39:47,+05:30
-233,power_disconnected,74,2025-10-26,13:49:33,+05:30
-233,power_connected,13,2025-10-26,22:07:20,+05:30
-233,power_disconnected,56,2025-10-26,22:33:28,+05:30
-233,power_connected,49,2025-10-26,23:30:04,+05:30
-233,power_disconnected,69,2025-10-26,23:45:10,+05:30
-233,power_connected,65,2025-10-27,00:13:16,+05:30
-233,power_disconnected,85,2025-10-27,00:28:06,+05:30
-233,power_connected,31,2025-10-27,12:23:29,+05:30
-233,power_disconnected,48,2025-10-27,12:37:30,+05:30
-233,power_connected,19,2025-10-27,16:22:54,+05:30
-233,power_disconnected,48,2025-10-27,16:47:04,+05:30
-233,power_connected,46,2025-10-27,16:54:47,+05:30
-233,power_disconnected,60,2025-10-27,17:08:45,+05:30
-233,power_connected,55,2025-10-27,17:40:17,+05:30
-233,power_disconnected,72,2025-10-27,17:54:12,+05:30
-233,power_connected,34,2025-10-27,22:24:44,+05:30
-233,power_disconnected,34,2025-10-27,22:25:10,+05:30
-233,power_connected,27,2025-10-27,23:12:56,+05:30
-233,power_disconnected,64,2025-10-27,23:47:35,+05:30
-233,power_connected,32,2025-10-28,04:20:20,+05:30
-233,power_disconnected,55,2025-10-28,04:38:37,+05:30
-233,power_connected,20,2025-10-28,08:04:39,+05:30
-233,power_disconnected,76,2025-10-28,08:37:10,+05:30
-233,power_connected,35,2025-10-28,17:24:28,+05:30
-233,power_disconnected,74,2025-10-28,17:57:09,+05:30
-233,power_connected,16,2025-10-29,08:50:40,+05:30
-233,power_disconnected,36,2025-10-29,09:01:26,+05:30
-233,power_connected,18,2025-10-29,12:51:34,+05:30
-233,power_disconnected,56,2025-10-29,13:31:50,+05:30
-233,power_connected,37,2025-10-29,15:30:21,+05:30
-233,power_disconnected,56,2025-10-29,15:46:17,+05:30
-233,power_connected,32,2025-10-29,19:47:07,+05:30
-233,power_disconnected,71,2025-10-29,20:12:06,+05:30
-233,power_connected,33,2025-10-29,23:44:52,+05:30
-233,power_disconnected,38,2025-10-29,23:49:16,+05:30
-233,power_connected,18,2025-10-30,08:02:17,+05:30
-233,power_disconnected,73,2025-10-30,08:33:29,+05:30
-233,power_connected,15,2025-10-30,15:08:27,+05:30
-233,power_disconnected,58,2025-10-30,15:45:58,+05:30
-233,power_connected,39,2025-10-30,17:57:16,+05:30
-233,power_disconnected,40,2025-10-30,17:58:03,+05:30
-233,power_connected,27,2025-10-30,19:45:13,+05:30
-233,power_disconnected,49,2025-10-30,20:02:55,+05:30
-233,power_connected,17,2025-10-30,23:18:29,+05:30
-233,power_disconnected,65,2025-10-31,00:00:00,+05:30
-233,power_connected,23,2025-10-31,11:00:32,+05:30
-233,power_disconnected,44,2025-10-31,11:19:48,+05:30
-233,power_connected,26,2025-10-31,13:53:31,+05:30
-233,power_disconnected,37,2025-10-31,14:02:49,+05:30
-233,power_connected,26,2025-10-31,15:11:32,+05:30
-233,power_disconnected,85,2025-10-31,15:47:19,+05:30
-233,power_connected,52,2025-10-31,18:54:02,+05:30
-233,power_disconnected,72,2025-10-31,19:06:23,+05:30
-233,power_connected,27,2025-11-01,00:16:47,+05:30
-233,power_disconnected,63,2025-11-01,00:42:25,+05:30
-233,power_connected,50,2025-11-01,08:24:25,+05:30
-233,power_disconnected,66,2025-11-01,08:33:16,+05:30
-233,power_connected,15,2025-11-01,15:05:18,+05:30
-233,power_disconnected,90,2025-11-01,16:18:37,+05:30
-233,power_connected,12,2025-11-02,11:39:24,+05:30
-233,power_disconnected,45,2025-11-02,12:00:08,+05:30
-233,power_connected,35,2025-11-02,12:49:00,+05:30
-233,power_disconnected,45,2025-11-02,12:56:48,+05:30
-233,power_connected,16,2025-11-02,15:48:15,+05:30
-233,power_disconnected,63,2025-11-02,16:26:59,+05:30
-233,power_connected,28,2025-11-02,21:28:37,+05:30
-233,power_disconnected,80,2025-11-02,22:03:08,+05:30
-233,power_connected,77,2025-11-02,22:24:23,+05:30
-233,power_disconnected,79,2025-11-02,22:28:55,+05:30
-233,power_connected,23,2025-11-03,14:07:34,+05:30
-233,power_disconnected,90,2025-11-03,15:03:30,+05:30
-233,power_connected,17,2025-11-04,00:07:44,+05:30
-233,power_disconnected,27,2025-11-04,00:18:00,+05:30
-233,power_connected,18,2025-11-04,01:37:43,+05:30
-233,power_disconnected,43,2025-11-04,01:56:18,+05:30
-233,power_connected,41,2025-11-04,14:01:16,+05:30
-233,power_disconnected,71,2025-11-04,14:19:50,+05:30
-233,power_connected,37,2025-11-04,17:56:06,+05:30
-233,power_disconnected,55,2025-11-04,18:10:12,+05:30
-233,power_connected,24,2025-11-04,22:30:48,+05:30
-233,power_disconnected,56,2025-11-04,22:56:50,+05:30
-233,power_connected,54,2025-11-04,23:05:28,+05:30
-233,power_disconnected,65,2025-11-04,23:13:52,+05:30
-233,power_connected,16,2025-11-05,15:52:35,+05:30
-233,power_disconnected,66,2025-11-05,16:38:46,+05:30
-233,power_connected,27,2025-11-05,21:15:57,+05:30
-233,power_disconnected,56,2025-11-05,21:40:25,+05:30
-233,power_connected,17,2025-11-06,03:48:34,+05:30
-233,power_disconnected,66,2025-11-06,04:29:57,+05:30
-233,power_connected,27,2025-11-06,14:13:08,+05:30
-233,power_disconnected,55,2025-11-06,14:42:40,+05:30
-233,power_connected,37,2025-11-06,16:27:15,+05:30
-233,power_disconnected,42,2025-11-06,16:30:38,+05:30
-233,power_connected,16,2025-11-06,21:38:42,+05:30
-233,power_disconnected,48,2025-11-06,22:04:25,+05:30
-233,power_connected,36,2025-11-07,01:22:15,+05:30
-233,power_disconnected,43,2025-11-07,01:26:04,+05:30
-233,power_connected,32,2025-11-07,09:56:21,+05:30
-233,power_disconnected,43,2025-11-07,10:02:16,+05:30
-233,power_connected,35,2025-11-07,11:11:34,+05:30
-233,power_disconnected,79,2025-11-07,11:47:38,+05:30
-233,power_connected,48,2025-11-07,15:44:07,+05:30
-233,power_disconnected,72,2025-11-07,15:58:21,+05:30
-233,power_connected,27,2025-11-07,23:20:29,+05:30
-233,power_disconnected,29,2025-11-07,23:22:34,+05:30
-233,power_connected,14,2025-11-08,03:22:02,+05:30
-233,power_disconnected,70,2025-11-08,03:59:40,+05:30
-233,power_connected,25,2025-11-08,17:28:40,+05:30
-233,power_disconnected,38,2025-11-08,17:36:23,+05:30
-233,power_connected,5,2025-11-08,20:54:15,+05:30
-233,power_disconnected,31,2025-11-08,21:09:04,+05:30
-233,power_connected,28,2025-11-08,21:45:30,+05:30
-233,power_disconnected,63,2025-11-08,22:09:50,+05:30
-233,power_connected,37,2025-11-09,04:32:09,+05:30
-233,power_disconnected,53,2025-11-09,04:40:34,+05:30
-233,power_connected,36,2025-11-09,14:29:11,+05:30
-233,power_disconnected,48,2025-11-09,14:35:15,+05:30
-233,power_connected,22,2025-11-09,19:35:34,+05:30
-233,power_disconnected,51,2025-11-09,19:51:41,+05:30
-233,power_connected,41,2025-11-09,21:13:24,+05:30
-233,power_disconnected,45,2025-11-09,21:17:32,+05:30
-233,power_connected,36,2025-11-09,22:15:48,+05:30
-233,power_disconnected,46,2025-11-09,22:21:23,+05:30
-233,power_connected,39,2025-11-09,23:04:33,+05:30
-233,power_disconnected,88,2025-11-09,23:35:27,+05:30
-233,power_connected,33,2025-11-10,14:06:32,+05:30
-233,power_disconnected,85,2025-11-10,14:37:33,+05:30
-233,power_connected,20,2025-11-11,00:10:34,+05:30
-233,power_disconnected,32,2025-11-11,00:16:38,+05:30
-233,power_connected,18,2025-11-11,01:36:51,+05:30
-233,power_disconnected,64,2025-11-11,02:08:56,+05:30
-233,power_connected,31,2025-11-11,12:07:30,+05:30
-233,power_disconnected,61,2025-11-11,12:24:16,+05:30
-233,power_connected,36,2025-11-11,15:52:13,+05:30
-233,power_disconnected,47,2025-11-11,16:00:46,+05:30
-233,power_connected,32,2025-11-11,17:20:15,+05:30
-233,power_disconnected,47,2025-11-11,17:31:59,+05:30
-233,power_connected,15,2025-11-11,21:46:49,+05:30
-233,power_disconnected,44,2025-11-11,22:07:36,+05:30
-233,power_connected,29,2025-11-12,10:30:37,+05:30
-233,power_disconnected,67,2025-11-12,10:55:35,+05:30
-233,power_connected,28,2025-11-12,16:07:46,+05:30
-233,power_disconnected,73,2025-11-12,16:33:23,+05:30
-233,power_connected,69,2025-11-12,17:21:27,+05:30
-233,power_disconnected,88,2025-11-12,17:37:48,+05:30
-233,power_connected,67,2025-11-12,20:36:03,+05:30
-233,power_disconnected,82,2025-11-12,20:47:59,+05:30
-233,power_connected,32,2025-11-13,02:21:57,+05:30
-233,power_disconnected,44,2025-11-13,02:31:00,+05:30
-233,power_connected,20,2025-11-13,14:21:07,+05:30
-233,power_disconnected,45,2025-11-13,14:37:41,+05:30
-233,power_connected,30,2025-11-13,15:54:17,+05:30
-233,power_disconnected,64,2025-11-13,16:23:41,+05:30
-233,power_connected,59,2025-11-13,16:58:08,+05:30
-233,power_disconnected,70,2025-11-13,17:05:22,+05:30
-233,power_connected,21,2025-11-13,23:57:58,+05:30
-233,power_disconnected,86,2025-11-14,00:40:30,+05:30
-233,power_connected,23,2025-11-14,13:44:52,+05:30
-233,power_disconnected,31,2025-11-14,13:51:23,+05:30
-233,power_connected,15,2025-11-14,14:58:05,+05:30
-233,power_disconnected,34,2025-11-14,15:20:24,+05:30
-233,power_connected,22,2025-11-14,16:20:59,+05:30
-233,power_disconnected,85,2025-11-14,17:00:46,+05:30""";
-}
-
-// File picker bridge
-class FileResultPicker {
-  static void pickCSVFile(Function(String?) callback) async {
-    try {
-      final result = await FilePicker.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['csv'],
-        withData: true,
-      );
-
-      if (result != null && result.files.isNotEmpty) {
-        final fileBytes = result.files.first.bytes;
-        if (fileBytes != null) {
-          callback(utf8.decode(fileBytes));
-          return;
-        }
-      }
-    } catch (e) {
-      print('Error picking CSV file: $e');
-    }
-    callback(null);
   }
 }
 

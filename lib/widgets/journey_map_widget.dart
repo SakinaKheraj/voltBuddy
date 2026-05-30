@@ -208,6 +208,7 @@ class JourneyMapWidget extends StatelessWidget {
             ListView.builder(
               physics: const NeverScrollableScrollPhysics(),
               shrinkWrap: true,
+              padding: EdgeInsets.zero,
               itemCount: sortedKeys.length,
               itemBuilder: (context, idx) {
                 final key = sortedKeys[idx];
