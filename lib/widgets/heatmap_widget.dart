@@ -85,7 +85,14 @@ class _HeatmapWidgetState extends State<HeatmapWidget> {
 
     final loc = LocalizationService();
 
-    final dateObj = DateTime.parse('${dayInfo.date} 00:00:00');
+    final dateParts = dayInfo.date.split(RegExp(r'[-/]'));
+    final dateObj = dateParts.length == 3
+        ? DateTime(
+            int.tryParse(dateParts[0]) ?? DateTime.now().year,
+            int.tryParse(dateParts[1]) ?? 1,
+            int.tryParse(dateParts[2]) ?? 1,
+          )
+        : DateTime.parse(dayInfo.date);
     final dateFormatted = "${_weekdayName(dateObj.weekday)}, ${_monthName(dateObj.month)} ${dateObj.day}";
     final avg = dayInfo.averageScore.round();
     final dayRankName = dayInfo.rankName ?? loc.translate("rank_1", defaultVal: "Recruit");
@@ -310,13 +317,44 @@ class _HeatmapWidgetState extends State<HeatmapWidget> {
   Widget build(BuildContext context) {
     final loc = LocalizationService();
 
-    final dateKeys = widget.dailyData.keys.toList()..sort();
+    final Map<String, DailyMetrics> standardizedDailyData = {};
+    widget.dailyData.forEach((key, value) {
+      final parts = key.trim().split(RegExp(r'[-/]'));
+      if (parts.length == 3) {
+        final y = parts[0];
+        final m = parts[1].padLeft(2, '0');
+        final d = parts[2].padLeft(2, '0');
+        standardizedDailyData['$y-$m-$d'] = value;
+      } else {
+        standardizedDailyData[key] = value;
+      }
+    });
+
+    final dateKeys = standardizedDailyData.keys.toList()..sort();
     if (dateKeys.isEmpty) return const SizedBox.shrink();
 
-    final firstDate = DateTime.parse('${dateKeys.first} 00:00:00');
-    final lastDate = DateTime.parse('${dateKeys.last} 00:00:00');
+    DateTime parseDateUtc(String dateStr) {
+      try {
+        final trimmed = dateStr.trim();
+        final parts = trimmed.split(RegExp(r'[-/]'));
+        if (parts.length == 3) {
+          final y = int.parse(parts[0]);
+          final m = int.parse(parts[1]);
+          final d = int.parse(parts[2]);
+          return DateTime.utc(y, m, d);
+        }
+        final dt = DateTime.parse(trimmed);
+        return DateTime.utc(dt.year, dt.month, dt.day);
+      } catch (_) {
+        final now = DateTime.now();
+        return DateTime.utc(now.year, now.month, now.day);
+      }
+    }
 
-    // Adjust firstDate back to nearest preceding Monday
+    final firstDate = parseDateUtc(dateKeys.first);
+    final lastDate = parseDateUtc(dateKeys.last);
+
+    // Adjust firstDate back to nearest preceding Monday in UTC
     final firstDow = firstDate.weekday; // 1 (Mon) to 7 (Sun)
     final mondayOffset = 1 - firstDow;
     final startMonday = firstDate.add(Duration(days: mondayOffset));
@@ -368,8 +406,8 @@ class _HeatmapWidgetState extends State<HeatmapWidget> {
       );
 
       for (var day in week) {
-        final dateStr = day.toString().substring(0, 10);
-        final dayInfo = widget.dailyData[dateStr];
+        final dateStr = "${day.year}-${day.month.toString().padLeft(2, '0')}-${day.day.toString().padLeft(2, '0')}";
+        final dayInfo = standardizedDailyData[dateStr];
         final cellColor = _getHeatmapColor(dayInfo, _mode);
         final cellKey = GlobalKey();
         final link = _layerLinks.putIfAbsent(dateStr, () => LayerLink());

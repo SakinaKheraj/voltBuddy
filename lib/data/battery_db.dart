@@ -1,4 +1,4 @@
-import 'dart:async';
+ximport 'dart:async';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -125,7 +125,7 @@ class BatteryDb {
       });
 
   Future<List<ChargeSession>> getAllChargeSessions() async {
-    final List<Map<String, dynamic>> maps = await (await _database).query('charge_sessions', orderBy: 'id ASC');
+    final List<Map<String, dynamic>> maps = await (await _database).query('charge_sessions', orderBy: 'start_date ASC, start_time ASC');
     return maps.map((map) => ChargeSession(
       startPct: map['start_pct'] as int,
       startDate: map['start_date'] as String,

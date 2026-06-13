@@ -499,6 +499,61 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
   // --- SIMULATION LOGIC REMOVED ---
 
+  DateTime _parseDateTime(String dateStr, String timeStr) {
+    try {
+      final trimmedDate = dateStr.trim();
+      final trimmedTime = timeStr.trim();
+      
+      final dateParts = trimmedDate.split(RegExp(r'[-/]'));
+      final timeParts = trimmedTime.split(':');
+      
+      int year = DateTime.now().year;
+      int month = DateTime.now().month;
+      int day = DateTime.now().day;
+      int hour = 0;
+      int minute = 0;
+      int second = 0;
+      
+      if (dateParts.length == 3) {
+        year = int.tryParse(dateParts[0]) ?? year;
+        month = int.tryParse(dateParts[1]) ?? month;
+        day = int.tryParse(dateParts[2]) ?? day;
+      }
+      
+      if (timeParts.isNotEmpty) {
+        hour = int.tryParse(timeParts[0]) ?? 0;
+        if (timeParts.length > 1) {
+          minute = int.tryParse(timeParts[1]) ?? 0;
+        }
+        if (timeParts.length > 2) {
+          second = int.tryParse(timeParts[2]) ?? 0;
+        }
+      }
+      
+      return DateTime(year, month, day, hour, minute, second);
+    } catch (_) {
+      return DateTime.now();
+    }
+  }
+
+  DateTime _parseDateUtc(String dateStr) {
+    try {
+      final trimmed = dateStr.trim();
+      final parts = trimmed.split(RegExp(r'[-/]'));
+      if (parts.length == 3) {
+        final y = int.parse(parts[0]);
+        final m = int.parse(parts[1]);
+        final d = int.parse(parts[2]);
+        return DateTime.utc(y, m, d);
+      }
+      final dt = DateTime.parse(trimmed);
+      return DateTime.utc(dt.year, dt.month, dt.day);
+    } catch (_) {
+      final now = DateTime.now();
+      return DateTime.utc(now.year, now.month, now.day);
+    }
+  }
+
   void _applySessionsToState(List<ChargeSession> sessions) {
     int localHp = 100;
     int localXp = 0;
@@ -509,24 +564,37 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     final GlobalMetrics localGlobalMetrics = GlobalMetrics();
     final List<Map<String, dynamic>> localTimelineCards = [];
 
-    if (sessions.isNotEmpty) {
-      final firstDateObj = DateTime.parse('${sessions.first.startDate} ${sessions.first.startTime}');
-      final lastDateObj = DateTime.parse('${sessions.last.endDate} ${sessions.last.endTime}');
+    // Chronologically sort sessions to ensure correct date comparison bounds
+    final sortedSessions = List<ChargeSession>.from(sessions)
+      ..sort((a, b) {
+        final aDt = _parseDateTime(a.startDate, a.startTime);
+        final bDt = _parseDateTime(b.startDate, b.startTime);
+        return aDt.compareTo(bDt);
+      });
+
+    if (sortedSessions.isNotEmpty) {
+      // Parse dates at UTC midnight to avoid local DST/timezone truncation errors
+      final firstDateRaw = sortedSessions.first.startDate;
+      final lastDateRaw = sortedSessions.last.endDate;
+      final firstDateObj = _parseDateUtc(firstDateRaw);
+      final lastDateObj = _parseDateUtc(lastDateRaw);
       final diffDays = lastDateObj.difference(firstDateObj).inDays;
       final diffWeeks = (diffDays / 7.0).ceil();
       final localWeeksCount = diffWeeks == 0 ? 1 : diffWeeks;
 
-      localGlobalMetrics.total = sessions.length;
+      localGlobalMetrics.total = sortedSessions.length;
 
-      for (int idx = 0; idx < sessions.length; idx++) {
-        final s = sessions[idx];
+      for (int idx = 0; idx < sortedSessions.length; idx++) {
+        final s = sortedSessions[idx];
 
-        final startDt = DateTime.parse('${s.startDate} ${s.startTime}');
-        final endDt = DateTime.parse('${s.endDate} ${s.endTime}');
+        final startDt = _parseDateTime(s.startDate, s.startTime);
+        final endDt = _parseDateTime(s.endDate, s.endTime);
         final duration = endDt.difference(startDt);
         final h = duration.inHours;
         final m = duration.inMinutes % 60;
         final durationStr = h > 0 ? '${h}h ${m}m' : '${m}m';
+
+        final startDatePadded = "${startDt.year}-${startDt.month.toString().padLeft(2, '0')}-${startDt.day.toString().padLeft(2, '0')}";
 
         int hpDelta = 0;
         int xpDelta = 0;
@@ -572,7 +640,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
           xpDelta = 15;
         }
 
-        final sDate = DateTime.parse('${s.startDate} 00:00:00');
+        final sDate = _parseDateUtc(startDatePadded);
         final daysDiff = sDate.difference(firstDateObj).inDays;
         final weekNum = (daysDiff / 7).floor() + 1;
         final weekKey = "Week $weekNum";
@@ -586,7 +654,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
         if (s.isCriticalStart) weekMetrics.crit++;
         if (s.isPerfectCharge) weekMetrics.perf++;
 
-        final dayKey = s.startDate;
+        final dayKey = startDatePadded;
         localDailyData.putIfAbsent(dayKey, () => DailyMetrics(date: dayKey));
         final dailyMetrics = localDailyData[dayKey]!;
         dailyMetrics.sessions++;
@@ -632,8 +700,8 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
         dailyMetrics.rankName = _loc.translate("rank_$id", defaultVal: fallback);
 
         final cardInfo = {
-          'date': s.startDate,
-          'time': s.startTime,
+          'date': startDatePadded,
+          'time': s.startTime.trim(),
           'startPct': s.startPct,
           'endPct': s.endPct,
           'msg': msg,
