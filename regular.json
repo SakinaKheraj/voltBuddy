@@ -1,6 +1,6 @@
 {
   "title": "ChargePet - Timeline & Data Engine",
-  "week_label": "Week 0",
+  "week_label": "Week {num}",
   "cat_btn": "\ud83d\udc31 Cat",
   "dog_btn": "\ud83d\udc36 Dog",
   "rabbit_btn": "\ud83d\udc30 Rabbit",

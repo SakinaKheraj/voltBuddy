@@ -359,47 +359,6 @@ class _PetRendererState extends State<PetRenderer>
                   },
                 ),
     
-                // SPEECH BUBBLE
-                if (widget.speechVisible)
-                  Positioned(
-                    top: -24,
-                    child: TweenAnimationBuilder<double>(
-                      tween: Tween<double>(begin: 0.0, end: 1.0),
-                      duration: const Duration(milliseconds: 300),
-                      curve: Curves.easeOutBack,
-                      builder: (context, val, child) {
-                        final floatOffset = _floatAnimation.value * 0.5;
-                        return Transform.translate(
-                          offset: Offset(0, floatOffset),
-                          child: Transform.scale(
-                            scale: val,
-                            child: child,
-                          ),
-                        );
-                      },
-                      child: NeoCard(
-                        backgroundColor: Colors.white,
-                        borderWidth: 3.0,
-                        borderRadius: 16.0,
-                        shadowOffset: const Offset(3, 3),
-                        padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 8.0),
-                        width: 220,
-                        child: Center(
-                          child: Text(
-                            widget.speechText,
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              fontFamily: 'Space Grotesk',
-                              fontWeight: FontWeight.bold,
-                              fontSize: 12.0,
-                              color: NeoColors.rpgText,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-    
                 // FLOATING TEXT OVERLAYS
                 ...widget.floatingTexts.map((ft) {
                   return FloatingOverlayText(
@@ -460,6 +419,47 @@ class _PetRendererState extends State<PetRenderer>
                     );
                   },
                 ),
+
+                // SPEECH BUBBLE (Overlaid on top of the pet)
+                if (widget.speechVisible)
+                  Positioned(
+                    top: -65,
+                    child: TweenAnimationBuilder<double>(
+                      tween: Tween<double>(begin: 0.0, end: 1.0),
+                      duration: const Duration(milliseconds: 300),
+                      curve: Curves.easeOutBack,
+                      builder: (context, val, child) {
+                        final floatOffset = _floatAnimation.value * 0.5;
+                        return Transform.translate(
+                          offset: Offset(0, floatOffset),
+                          child: Transform.scale(
+                            scale: val,
+                            child: child,
+                          ),
+                        );
+                      },
+                      child: NeoCard(
+                        backgroundColor: Colors.white,
+                        borderWidth: 3.0,
+                        borderRadius: 16.0,
+                        shadowOffset: const Offset(3, 3),
+                        padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 8.0),
+                        width: 220,
+                        child: Center(
+                          child: Text(
+                            widget.speechText,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              fontFamily: 'Space Grotesk',
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12.0,
+                              color: NeoColors.rpgText,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),

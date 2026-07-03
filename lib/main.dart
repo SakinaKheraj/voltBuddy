@@ -14,9 +14,25 @@ import 'widgets/journey_map_widget.dart';
 
 import 'package:battery_plus/battery_plus.dart';
 import 'data/battery_db.dart';
+import 'dart:io';
+import 'package:share_plus/share_plus.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:workmanager/workmanager.dart';
+import 'background/battery_task.dart' show callbackDispatcher;
+import 'background/schedule_battery.dart' show scheduleBatteryBackground;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  try {
+    await Workmanager().initialize(
+      callbackDispatcher,
+      isInDebugMode: false,
+    );
+  } catch (e) {
+    debugPrint("Failed to initialize Workmanager: $e");
+  }
+
   final loc = LocalizationService();
   await loc.init();
   runApp(const MyApp());
@@ -93,7 +109,10 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
   // Real-Time Tracking State
   bool _isCharging = false;
+  int _currentBatteryLevel = 100;
+  int? _chargingStartLevel;
   StreamSubscription<BatteryState>? _batterySubscription;
+  Timer? _foregroundBatteryTimer;
   final Battery _battery = Battery();
 
   // Expanded cards index state tracker
@@ -134,12 +153,19 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     _loadRealStats();
     // Initialize active charging detection
     _initBatteryListener();
+    // Schedule background periodic battery log collection
+    try {
+      scheduleBatteryBackground();
+    } catch (e) {
+      debugPrint("Failed to schedule background tasks: $e");
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _batterySubscription?.cancel();
+    _stopForegroundTimer();
     _speechTimer?.cancel();
     _timelineScrollController.dispose();
     _mainScrollController.dispose();
@@ -310,13 +336,23 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
             ),
             const Divider(color: Colors.black26),
             const SizedBox(height: 6),
-            Text(
-              response,
-              style: const TextStyle(
-                fontFamily: 'Space Grotesk',
-                fontSize: 13.0,
-                height: 1.4,
-                color: NeoColors.rpgText,
+            RichText(
+              text: TextSpan(
+                style: const TextStyle(
+                  fontFamily: 'Space Grotesk',
+                  fontSize: 13.0,
+                  height: 1.4,
+                  color: NeoColors.rpgText,
+                ),
+                children: _parseMarkdownToTextSpans(
+                  response,
+                  const TextStyle(
+                    fontFamily: 'Space Grotesk',
+                    fontSize: 13.0,
+                    height: 1.4,
+                    color: NeoColors.rpgText,
+                  ),
+                ),
               ),
             ),
           ],
@@ -326,6 +362,36 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   }
 
   Widget? _adviceContent;
+
+  List<TextSpan> _parseMarkdownToTextSpans(String text, TextStyle baseStyle) {
+    final List<TextSpan> spans = [];
+    final RegExp regExp = RegExp(r'\*\*(.*?)\*\*');
+    int start = 0;
+    
+    for (final RegExpMatch match in regExp.allMatches(text)) {
+      if (match.start > start) {
+        spans.add(TextSpan(
+          text: text.substring(start, match.start),
+          style: baseStyle,
+        ));
+      }
+      spans.add(TextSpan(
+        text: match.group(1),
+        style: baseStyle.copyWith(fontWeight: FontWeight.bold),
+      ));
+      start = match.end;
+    }
+    
+    if (start < text.length) {
+      spans.add(TextSpan(
+        text: text.substring(start),
+        style: baseStyle,
+      ));
+    }
+    
+    return spans;
+  }
+
 
   // --- SIMULATION LOGIC ---
 
@@ -340,8 +406,10 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _checkBatteryAndPendingSession();
+      _startForegroundTimer();
     } else if (state == AppLifecycleState.paused) {
       _saveCheckpoint();
+      _stopForegroundTimer();
     }
   }
 
@@ -363,6 +431,20 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     _batterySubscription = _battery.onBatteryStateChanged.listen((BatteryState state) {
       _handleBatteryStateChange(state);
     });
+
+    _startForegroundTimer();
+  }
+
+  void _startForegroundTimer() {
+    _foregroundBatteryTimer?.cancel();
+    _foregroundBatteryTimer = Timer.periodic(const Duration(seconds: 10), (timer) {
+      _checkBatteryAndPendingSession();
+    });
+  }
+
+  void _stopForegroundTimer() {
+    _foregroundBatteryTimer?.cancel();
+    _foregroundBatteryTimer = null;
   }
 
   Future<void> _checkBatteryAndPendingSession() async {
@@ -371,14 +453,44 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
       final currentLevel = await _battery.batteryLevel;
       final isNowCharging = state == BatteryState.charging || state == BatteryState.full;
       
-      final pending = await BatteryDb().getPendingSession();
-      final latestRecord = await BatteryDb().getLatestRecord();
-      
       final now = DateTime.now();
       final dateStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
       final timeStr = "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}";
 
+      // Write record to database
+      await BatteryDb().insertRecord(BatteryRecord(
+        timestamp: now.toIso8601String(),
+        level: currentLevel,
+        state: state.toString().split('.').last,
+      ));
+
+      // Process raw records to detect sessions
+      await BatteryDb().processRawRecordsIntoSessions();
+
+      int? startPct;
+      if (isNowCharging) {
+        final pending = await BatteryDb().getPendingSession();
+        if (pending != null) {
+          startPct = pending['start_pct'] as int;
+        } else {
+          await BatteryDb().savePendingSession(currentLevel, dateStr, timeStr);
+          startPct = currentLevel;
+        }
+      } else {
+        await BatteryDb().clearPendingSession();
+      }
+
       if (isNowCharging != _isCharging) {
+        if (isNowCharging) {
+          _spawnFloatingText("Charging Started! ⚡", const Color(0xFF2A9D8F));
+          _showSpeechBubble("Charging... Feeling the power! ⚡");
+        } else {
+          final diff = (_chargingStartLevel != null) ? (currentLevel - _chargingStartLevel!) : 0;
+          if (diff > 0) {
+            _spawnFloatingText("Charged to $currentLevel%!", const Color(0xFF2A9D8F));
+            _showSpeechBubble("Charged! +$diff% battery.");
+          }
+        }
         setState(() {
           _isCharging = isNowCharging;
           if (_isCharging) {
@@ -387,114 +499,20 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
         });
       }
 
-      int? offlineStartPct;
-      String? offlineStartDate;
-      String? offlineStartTime;
+      setState(() {
+        _currentBatteryLevel = currentLevel;
+        _chargingStartLevel = startPct;
+      });
 
-      if (pending != null) {
-        offlineStartPct = pending['start_pct'] as int;
-        offlineStartDate = pending['start_date'] as String;
-        offlineStartTime = pending['start_time'] as String;
-      } else if (latestRecord != null && latestRecord.level < currentLevel - 1) {
-        offlineStartPct = latestRecord.level;
-        try {
-          final dt = DateTime.parse(latestRecord.timestamp);
-          offlineStartDate = "${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}";
-          offlineStartTime = "${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}:${dt.second.toString().padLeft(2, '0')}";
-        } catch (_) {
-          offlineStartDate = dateStr;
-          offlineStartTime = timeStr;
-        }
-      }
-
-      if (offlineStartPct != null && currentLevel > offlineStartPct) {
-        await BatteryDb().clearPendingSession();
-
-        final completedSession = ChargeSession(
-          startPct: offlineStartPct,
-          startDate: offlineStartDate ?? dateStr,
-          startTime: offlineStartTime ?? timeStr,
-          endPct: currentLevel,
-          endDate: dateStr,
-          endTime: timeStr,
-        );
-
-        await BatteryDb().insertChargeSession(completedSession);
-        _spawnFloatingText("Charged to $currentLevel%!", const Color(0xFF2A9D8F));
-        _showSpeechBubble("Charged! +${currentLevel - offlineStartPct}% battery.");
-
-        await _loadRealStats();
-      }
-
-      if (isNowCharging) {
-        final refreshedPending = await BatteryDb().getPendingSession();
-        if (refreshedPending == null) {
-          await BatteryDb().savePendingSession(currentLevel, dateStr, timeStr);
-        }
-      } else {
-        await BatteryDb().clearPendingSession();
-      }
-
-      await BatteryDb().insertRecord(BatteryRecord(
-        timestamp: now.toIso8601String(),
-        level: currentLevel,
-        state: state.toString().split('.').last,
-      ));
+      await _loadRealStats();
 
     } catch (e) {
-      print("Error in _checkBatteryAndPendingSession: $e");
+      debugPrint("Error in _checkBatteryAndPendingSession: $e");
     }
   }
 
   Future<void> _handleBatteryStateChange(BatteryState state) async {
-    final isNowCharging = state == BatteryState.charging || state == BatteryState.full;
-    if (isNowCharging == _isCharging) return;
-
-    setState(() {
-      _isCharging = isNowCharging;
-      if (_isCharging) {
-        _petGlowTrigger++;
-      }
-    });
-
-    try {
-      final currentLevel = await _battery.batteryLevel;
-      final now = DateTime.now();
-      final dateStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
-      final timeStr = "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}";
-
-      if (_isCharging) {
-        await BatteryDb().savePendingSession(currentLevel, dateStr, timeStr);
-        _spawnFloatingText("Charging Started! ⚡", const Color(0xFF2A9D8F));
-        _showSpeechBubble("Charging... Feeling the power! ⚡");
-      } else {
-        final pending = await BatteryDb().getPendingSession();
-        if (pending != null) {
-          final startPct = pending['start_pct'] as int;
-          final startDate = pending['start_date'] as String;
-          final startTime = pending['start_time'] as String;
-
-          await BatteryDb().clearPendingSession();
-
-          final completedSession = ChargeSession(
-            startPct: startPct,
-            startDate: startDate,
-            startTime: startTime,
-            endPct: currentLevel,
-            endDate: dateStr,
-            endTime: timeStr,
-          );
-
-          await BatteryDb().insertChargeSession(completedSession);
-          _spawnFloatingText("Charged to $currentLevel%!", const Color(0xFF2A9D8F));
-          _showSpeechBubble("Charged! +${currentLevel - startPct}% battery.");
-
-          await _loadRealStats();
-        }
-      }
-    } catch (e) {
-      print("Error in _handleBatteryStateChange: $e");
-    }
+    await _checkBatteryAndPendingSession();
   }
 
   // --- SIMULATION LOGIC REMOVED ---
@@ -793,6 +811,143 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     _screenShakeController.forward(from: 0.0);
   }
 
+  Future<void> _shareLogsCsv() async {
+    final RenderBox? box = context.findRenderObject() as RenderBox?;
+    final rect = box != null ? (box.localToGlobal(Offset.zero) & box.size) : null;
+
+    try {
+      final sessions = await BatteryDb().getAllChargeSessions();
+      if (sessions.isEmpty) {
+        _spawnFloatingText("No logs to share!", NeoColors.rpgMuted);
+        return;
+      }
+
+      final csvBuffer = StringBuffer();
+      csvBuffer.writeln("Start Date,Start Time,Start Battery %,End Date,End Time,End Battery %,Is Overcharge,Is Critical Start,Is Perfect Charge");
+      
+      for (final s in sessions) {
+        csvBuffer.writeln(
+          "${s.startDate},${s.startTime},${s.startPct},${s.endDate},${s.endTime},${s.endPct},${s.isOvercharge},${s.isCriticalStart},${s.isPerfectCharge}"
+        );
+      }
+
+      final tempDir = await getTemporaryDirectory();
+      final file = File('${tempDir.path}/charge_logs.csv');
+      await file.writeAsString(csvBuffer.toString());
+
+      final xFile = XFile(file.path);
+
+      await SharePlus.instance.share(
+        ShareParams(
+          files: [xFile],
+          text: 'VoltBuddy Charging Logs CSV',
+          sharePositionOrigin: rect,
+        ),
+      );
+    } catch (e) {
+      _spawnFloatingText("Share failed: $e", NeoColors.rpgBad);
+    }
+  }
+
+  Future<void> _showClearConfirmationDialog(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: true,
+      builder: (BuildContext context) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 24.0),
+          child: NeoCard(
+            backgroundColor: NeoColors.rpgBg,
+            borderColor: NeoColors.rpgText,
+            borderWidth: 4.0,
+            shadowColor: NeoColors.rpgText,
+            shadowOffset: const Offset(6, 6),
+            padding: const EdgeInsets.all(20.0),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.warning_amber_rounded, color: NeoColors.rpgMuted, size: 28.0),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _loc.translate('clear_dialog_title', defaultVal: 'CLEAR ALL DATA?').toUpperCase(),
+                        style: const TextStyle(
+                          fontFamily: 'Space Grotesk',
+                          fontWeight: FontWeight.w900,
+                          fontSize: 16.0,
+                          color: NeoColors.rpgText,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  _loc.translate('clear_dialog_desc', defaultVal: 'This will permanently wipe all recorded charging sessions. Are you sure you want to proceed?'),
+                  style: const TextStyle(
+                    fontFamily: 'Space Grotesk',
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12.0,
+                    color: NeoColors.rpgText,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    NeoButton(
+                      backgroundColor: Colors.white,
+                      borderColor: NeoColors.rpgText,
+                      shadowColor: NeoColors.rpgText,
+                      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                      onPressed: () => Navigator.of(context).pop(false),
+                      child: Text(
+                        _loc.translate('btn_cancel', defaultVal: 'CANCEL').toUpperCase(),
+                        style: const TextStyle(
+                          fontFamily: 'Space Grotesk',
+                          fontWeight: FontWeight.w900,
+                          fontSize: 11.0,
+                          color: NeoColors.rpgText,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    NeoButton(
+                      backgroundColor: NeoColors.rpgMuted,
+                      borderColor: NeoColors.rpgText,
+                      shadowColor: NeoColors.rpgText,
+                      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                      onPressed: () => Navigator.of(context).pop(true),
+                      child: Text(
+                        _loc.translate('btn_clear', defaultVal: 'CONFIRM').toUpperCase(),
+                        style: const TextStyle(
+                          fontFamily: 'Space Grotesk',
+                          fontWeight: FontWeight.w900,
+                          fontSize: 11.0,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+
+    if (confirmed == true) {
+      await BatteryDb().clearChargeSessions();
+      await _loadRealStats();
+      _spawnFloatingText("Logs Cleared!", NeoColors.rpgMuted);
+    }
+  }
+
   // --- MANUAL DEV INTERACTIONS ---
 
   void _manualGoodCharge() {
@@ -910,7 +1065,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                     physics: const ClampingScrollPhysics(),
                     child: Column(
                       children: [
-                        const SizedBox(height: 38),
+                        const SizedBox(height: 80),
                         // Pet Arena Stage
                         PetRenderer(
                           species: _currentSpecies,
@@ -958,111 +1113,134 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
   Widget _buildHeader() {
     final rankName = _getRankName(_currentRankIndex);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
-      decoration: const BoxDecoration(
-        color: NeoColors.rpgBg,
-        border: Border(
-          bottom: BorderSide(color: NeoColors.rpgText, width: 4.0),
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: NeoColors.rpgText,
-            offset: Offset(0, 4),
-            blurRadius: 0,
+    return SafeArea(
+      bottom: false,
+      minimum: const EdgeInsets.only(top: 44.0),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
+        decoration: const BoxDecoration(
+          color: NeoColors.rpgBg,
+          border: Border(
+            bottom: BorderSide(color: NeoColors.rpgText, width: 4.0),
           ),
-        ],
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          // RANK BADGE (Hidden Easter Egg trigger)
-          GestureDetector(
-            onTap: _triggerBadgeClick,
-            child: NeoCard(
-              backgroundColor: Colors.white,
-              borderWidth: 2.5,
-              borderRadius: 12.0,
-              shadowOffset: const Offset(2, 2),
-              padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 4.0),
-              child: Row(
-                children: [
-                  const Icon(Icons.star, color: NeoColors.primary, size: 16.0),
-                  const SizedBox(width: 4),
-                  Text(
-                    rankName.toUpperCase(),
-                    style: const TextStyle(
-                      fontFamily: 'Space Grotesk',
-                      fontWeight: FontWeight.bold,
-                      fontSize: 10.5,
-                      color: NeoColors.rpgText,
-                    ),
-                  ),
-                ],
-              ),
+          boxShadow: [
+            BoxShadow(
+              color: NeoColors.rpgText,
+              offset: Offset(0, 4),
+              blurRadius: 0,
             ),
-          ),
-
-          // Right controls
-          Row(
-            children: [
-              // Language Select Menu
-              NeoCard(
-                backgroundColor: Colors.white,
-                borderWidth: 2.5,
-                borderRadius: 12.0,
-                shadowOffset: const Offset(2, 2),
-                padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<String>(
-                    value: _currentLanguage,
-                    isDense: true,
-                    icon: const Icon(Icons.arrow_drop_down, color: NeoColors.rpgText, size: 16.0),
-                    style: const TextStyle(
-                      fontFamily: 'Space Grotesk',
-                      fontWeight: FontWeight.bold,
-                      fontSize: 10.5,
-                      color: NeoColors.rpgText,
+          ],
+        ),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final rowWidget = Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                // RANK BADGE (Hidden Easter Egg trigger)
+                GestureDetector(
+                  onTap: _triggerBadgeClick,
+                  child: NeoCard(
+                    backgroundColor: Colors.white,
+                    borderWidth: 2.5,
+                    borderRadius: 12.0,
+                    shadowOffset: const Offset(2, 2),
+                    padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 4.0),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.star, color: NeoColors.primary, size: 16.0),
+                        const SizedBox(width: 4),
+                        Text(
+                          rankName.toUpperCase(),
+                          style: const TextStyle(
+                            fontFamily: 'Space Grotesk',
+                            fontWeight: FontWeight.bold,
+                            fontSize: 10.5,
+                            color: NeoColors.rpgText,
+                          ),
+                        ),
+                      ],
                     ),
-                    onChanged: _changeLanguage,
-                    items: const [
-                      DropdownMenuItem(value: "regular", child: Text("REGULAR")),
-                      DropdownMenuItem(value: "genz", child: Text("GEN Z")),
-                    ],
                   ),
                 ),
-              ),
-              const SizedBox(width: 8),
-
-              // Time week indicator badge
-              NeoCard(
-                backgroundColor: Colors.white,
-                borderWidth: 2.5,
-                borderRadius: 12.0,
-                shadowOffset: const Offset(2, 2),
-                padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 4.0),
-                child: Row(
+      
+                // Right controls
+                Row(
                   children: [
-                    const Icon(Icons.calendar_month, color: NeoColors.rpgSurface, size: 15.0),
-                    const SizedBox(width: 4),
-                    Text(
-                      _loc.translate('week_label',
-                              defaultVal: 'Week {num}')
-                          .replaceAll('{num}', '$_simulatedWeeksCount')
-                          .toUpperCase(),
-                      style: const TextStyle(
-                        fontFamily: 'Space Grotesk',
-                        fontWeight: FontWeight.bold,
-                        fontSize: 10.5,
-                        color: NeoColors.rpgText,
+                    // Language Select Menu
+                    NeoCard(
+                      backgroundColor: Colors.white,
+                      borderWidth: 2.5,
+                      borderRadius: 12.0,
+                      shadowOffset: const Offset(2, 2),
+                      padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<String>(
+                          value: _currentLanguage,
+                          isDense: true,
+                          icon: const Icon(Icons.arrow_drop_down, color: NeoColors.rpgText, size: 16.0),
+                          style: const TextStyle(
+                            fontFamily: 'Space Grotesk',
+                            fontWeight: FontWeight.bold,
+                            fontSize: 10.5,
+                            color: NeoColors.rpgText,
+                          ),
+                          onChanged: _changeLanguage,
+                          items: const [
+                            DropdownMenuItem(value: "regular", child: Text("REGULAR")),
+                            DropdownMenuItem(value: "genz", child: Text("GEN Z")),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+      
+                    // Time week indicator badge
+                    NeoCard(
+                      backgroundColor: Colors.white,
+                      borderWidth: 2.5,
+                      borderRadius: 12.0,
+                      shadowOffset: const Offset(2, 2),
+                      padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 4.0),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.calendar_month, color: NeoColors.rpgSurface, size: 15.0),
+                          const SizedBox(width: 4),
+                          Text(
+                            _loc.translate('week_label',
+                                    defaultVal: 'Week {num}')
+                                .replaceAll('{num}', '${_simulatedWeeksCount == 0 ? 1 : _simulatedWeeksCount}')
+                                .toUpperCase(),
+                            style: const TextStyle(
+                              fontFamily: 'Space Grotesk',
+                              fontWeight: FontWeight.bold,
+                              fontSize: 10.5,
+                              color: NeoColors.rpgText,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
                 ),
-              ),
-            ],
-          ),
-        ],
+              ],
+            );
+
+            // Responsive scaling for narrow screens
+            return constraints.maxWidth < 375
+                ? SizedBox(
+                    width: constraints.maxWidth,
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.center,
+                      child: SizedBox(
+                        width: 375,
+                        child: rowWidget,
+                      ),
+                    ),
+                  )
+                : rowWidget;
+          },
+        ),
       ),
     );
   }
@@ -1110,22 +1288,24 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
         ),
         const SizedBox(height: 8),
 
-        // Quick Species Buttons
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
+        // Quick Species Buttons (using Wrap for responsiveness)
+        Wrap(
+          alignment: WrapAlignment.center,
+          spacing: 6.0,
+          runSpacing: 6.0,
           children: [
             _buildSpeciesButton("cat", _loc.translate('cat_btn', defaultVal: '🐱 Cat')),
-            const SizedBox(width: 6),
             _buildSpeciesButton("dog", _loc.translate('dog_btn', defaultVal: '🐶 Dog')),
-            const SizedBox(width: 6),
             _buildSpeciesButton("rabbit", _loc.translate('rabbit_btn', defaultVal: '🐰 Rabbit')),
           ],
         ),
         const SizedBox(height: 10),
 
-        // Action Status details row
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
+        // Action Status details row (using Wrap for responsiveness)
+        Wrap(
+          alignment: WrapAlignment.center,
+          spacing: 8.0,
+          runSpacing: 8.0,
           children: [
             // Status Tag Badge
             Container(
@@ -1146,7 +1326,6 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
               ),
             ),
 
-            const SizedBox(width: 8),
             // Talk Button
             NeoButton(
               backgroundColor: Colors.white,
@@ -1164,7 +1343,6 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                 ),
               ),
             ),
-
           ],
         ),
         if (_isCharging) ...[
@@ -1183,14 +1361,16 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                 ),
               ],
             ),
-            child: const Row(
+            child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.bolt, color: Colors.white, size: 16),
-                SizedBox(width: 4),
+                const Icon(Icons.bolt, color: Colors.white, size: 16),
+                const SizedBox(width: 4),
                 Text(
-                  "⚡ SPARKY IS CHARGING...",
-                  style: TextStyle(
+                  _chargingStartLevel != null
+                      ? "⚡ SPARKY IS CHARGING... ($_chargingStartLevel% -> $_currentBatteryLevel%)"
+                      : "⚡ SPARKY IS CHARGING... ($_currentBatteryLevel%)",
+                  style: const TextStyle(
                     fontFamily: 'Space Grotesk',
                     fontWeight: FontWeight.w900,
                     fontSize: 11.0,
@@ -1538,10 +1718,14 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         // Real data header row
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        Wrap(
+          alignment: WrapAlignment.spaceBetween,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 8.0,
+          runSpacing: 8.0,
           children: [
             const Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
                 Icon(Icons.history, color: NeoColors.rpgText),
                 SizedBox(width: 8),
@@ -1552,20 +1736,40 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
               ],
             ),
             if (_timelineCards.isNotEmpty)
-              NeoButton(
-                backgroundColor: NeoColors.rpgMuted,
-                borderColor: NeoColors.rpgText,
-                shadowColor: NeoColors.rpgText,
-                padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 6.0),
-                onPressed: () async {
-                  await BatteryDb().clearChargeSessions();
-                  await _loadRealStats();
-                  _spawnFloatingText("Logs Cleared!", NeoColors.rpgMuted);
-                },
-                child: const Text(
-                  "CLEAR ALL",
-                  style: TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.w900, color: Colors.white, fontSize: 10.0),
-                ),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  NeoButton(
+                    backgroundColor: NeoColors.primary,
+                    borderColor: NeoColors.rpgText,
+                    shadowColor: NeoColors.rpgText,
+                    padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 6.0),
+                    onPressed: _shareLogsCsv,
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.share, color: Colors.white, size: 12.0),
+                        SizedBox(width: 4),
+                        Text(
+                          "SHARE CSV",
+                          style: TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.w900, color: Colors.white, fontSize: 10.0),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  NeoButton(
+                    backgroundColor: NeoColors.rpgMuted,
+                    borderColor: NeoColors.rpgText,
+                    shadowColor: NeoColors.rpgText,
+                    padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 6.0),
+                    onPressed: () => _showClearConfirmationDialog(context),
+                    child: const Text(
+                      "CLEAR ALL",
+                      style: TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.w900, color: Colors.white, fontSize: 10.0),
+                    ),
+                  ),
+                ],
               ),
           ],
         ),

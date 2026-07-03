@@ -162,4 +162,101 @@ class BatteryDb {
     final db = await _database;
     await db.delete('pending_session');
   }
+
+  Future<int> deleteRecordsUpTo(int maxId) async {
+    final db = await _database;
+    return await db.delete('records', where: 'id <= ?', whereArgs: [maxId]);
+  }
+
+  Future<void> processRawRecordsIntoSessions() async {
+    final allRecords = await getAll();
+    if (allRecords.length < 2) return;
+
+    List<ChargeSession> detectedSessions = [];
+    int maxProcessedId = -1;
+
+    int? sessionStartLevel;
+    BatteryRecord? sessionStartRecord;
+    BatteryRecord? lastChargingRecord;
+
+    for (int i = 0; i < allRecords.length; i++) {
+      final rec = allRecords[i];
+      final isChargingNow = rec.state == 'charging' || rec.state == 'full';
+      final prevRec = i > 0 ? allRecords[i - 1] : null;
+
+      // Check for offline/gap charging session:
+      // If the level increased, but neither record is currently charging
+      if (prevRec != null && rec.level > prevRec.level + 1 && !isChargingNow) {
+        try {
+          final startDt = DateTime.parse(prevRec.timestamp);
+          final endDt = DateTime.parse(rec.timestamp);
+
+          final session = ChargeSession(
+            startPct: prevRec.level,
+            startDate: "${startDt.year}-${startDt.month.toString().padLeft(2, '0')}-${startDt.day.toString().padLeft(2, '0')}",
+            startTime: "${startDt.hour.toString().padLeft(2, '0')}:${startDt.minute.toString().padLeft(2, '0')}:${startDt.second.toString().padLeft(2, '0')}",
+            endPct: rec.level,
+            endDate: "${endDt.year}-${endDt.month.toString().padLeft(2, '0')}-${endDt.day.toString().padLeft(2, '0')}",
+            endTime: "${endDt.hour.toString().padLeft(2, '0')}:${endDt.minute.toString().padLeft(2, '0')}:${endDt.second.toString().padLeft(2, '0')}",
+          );
+          detectedSessions.add(session);
+        } catch (_) {}
+
+        if (rec.id != null && rec.id! > maxProcessedId) {
+          maxProcessedId = rec.id!;
+        }
+
+        sessionStartLevel = null;
+        sessionStartRecord = null;
+        lastChargingRecord = null;
+        continue;
+      }
+
+      if (isChargingNow) {
+        if (sessionStartLevel == null) {
+          sessionStartLevel = rec.level;
+          sessionStartRecord = rec;
+        }
+        lastChargingRecord = rec;
+      } else {
+        if (sessionStartLevel != null && lastChargingRecord != null) {
+          final endLevel = rec.level;
+          final endRecord = rec;
+
+          if (endLevel > sessionStartLevel) {
+            try {
+              final startDt = DateTime.parse(sessionStartRecord!.timestamp);
+              final endDt = DateTime.parse(endRecord.timestamp);
+
+              final session = ChargeSession(
+                startPct: sessionStartLevel,
+                startDate: "${startDt.year}-${startDt.month.toString().padLeft(2, '0')}-${startDt.day.toString().padLeft(2, '0')}",
+                startTime: "${startDt.hour.toString().padLeft(2, '0')}:${startDt.minute.toString().padLeft(2, '0')}:${startDt.second.toString().padLeft(2, '0')}",
+                endPct: endLevel,
+                endDate: "${endDt.year}-${endDt.month.toString().padLeft(2, '0')}-${endDt.day.toString().padLeft(2, '0')}",
+                endTime: "${endDt.hour.toString().padLeft(2, '0')}:${endDt.minute.toString().padLeft(2, '0')}:${endDt.second.toString().padLeft(2, '0')}",
+              );
+              detectedSessions.add(session);
+            } catch (_) {}
+          }
+
+          if (endRecord.id != null && endRecord.id! > maxProcessedId) {
+            maxProcessedId = endRecord.id!;
+          }
+
+          sessionStartLevel = null;
+          sessionStartRecord = null;
+          lastChargingRecord = null;
+        }
+      }
+    }
+
+    for (final session in detectedSessions) {
+      await insertChargeSession(session);
+    }
+
+    if (maxProcessedId != -1) {
+      await deleteRecordsUpTo(maxProcessedId);
+    }
+  }
 }

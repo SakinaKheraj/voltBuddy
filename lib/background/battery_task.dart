@@ -1,5 +1,16 @@
 import 'package:battery_plus/battery_plus.dart';
-import 'package:voltbuddy/data/battery_db.dart'; // adjust import if needed
+import 'package:workmanager/workmanager.dart';
+import 'package:voltbuddy/data/battery_db.dart';
+
+@pragma('vm:entry-point')
+void callbackDispatcher() {
+  Workmanager().executeTask((taskName, inputData) async {
+    try {
+      await collectBatteryData();
+    } catch (_) {}
+    return Future.value(true);
+  });
+}
 
 /// Called by Workmanager every 15 minutes on Android.
 Future<void> collectBatteryData() async {
@@ -13,5 +24,7 @@ Future<void> collectBatteryData() async {
     state: state.toString().split('.').last,
   );
 
-  await BatteryDb().insertRecord(record);
+  final db = BatteryDb();
+  await db.insertRecord(record);
+  await db.processRawRecordsIntoSessions();
 }

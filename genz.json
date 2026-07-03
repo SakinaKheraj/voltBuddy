@@ -1,6 +1,6 @@
 {
   "title": "VoltBuddy - Vibing & Data",
-  "week_label": "Week 0",
+  "week_label": "Week {num}",
   "cat_btn": "\ud83d\udc31 Kitty",
   "dog_btn": "\ud83d\udc36 Doggo",
   "rabbit_btn": "\ud83d\udc30 Bunbun",

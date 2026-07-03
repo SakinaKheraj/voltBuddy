@@ -6,16 +6,20 @@ class GeminiService {
   factory GeminiService() => _instance;
   GeminiService._internal();
 
-  static const _keyPart1 = "AIzaSyDRbzUMUg";
-  static const _keyPart2 = "79Hl_k17rZ5c41O_K0DC5cPtI";
-  
-  String get _apiKey => _keyPart1 + _keyPart2;
+  // API key must not be committed. Set it via dart-define or a secure config.
+  static const _apiKey =
+      String.fromEnvironment('GEMINI_API_KEY', defaultValue: '');
 
   Future<String> fetchGeminiWithRetry({
     required String prompt,
     required String systemPrompt,
     int retries = 5,
   }) async {
+    if (_apiKey.isEmpty) {
+      throw Exception(
+          'Gemini API key not configured. Use --dart-define=GEMINI_API_KEY=your_key');
+    }
+
     final url = Uri.parse(
       'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:generateContent?key=$_apiKey',
     );
@@ -60,7 +64,8 @@ class GeminiService {
           }
           throw Exception('Invalid Gemini API response structure');
         } else {
-          throw Exception('HTTP Error ${response.statusCode}: ${response.body}');
+          throw Exception(
+              'HTTP Error ${response.statusCode}: ${response.body}');
         }
       } catch (e) {
         print('Gemini API attempt $i failed: $e');
