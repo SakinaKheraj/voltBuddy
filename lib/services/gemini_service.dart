@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:http/http.dart' as http;
 
 class GeminiService {
@@ -6,9 +7,8 @@ class GeminiService {
   factory GeminiService() => _instance;
   GeminiService._internal();
 
-  // API key must not be committed. Set it via dart-define or a secure config.
-  static const _apiKey =
-      String.fromEnvironment('GEMINI_API_KEY', defaultValue: '');
+  // API key must not be committed. Set it via the local .env file.
+  static final _apiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
 
   Future<String> fetchGeminiWithRetry({
     required String prompt,
