@@ -45,3 +45,7 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 /android/key.properties
+/android/build/
+
+# Built APKs (too large for GitHub; archived separately)
+*.apk

@@ -6,6 +6,8 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'models/simulation_models.dart';
 
+import 'services/battery_snapshot_service.dart';
+import 'services/charging_ai_service.dart';
 import 'services/localization_service.dart';
 import 'services/gemini_service.dart';
 import 'widgets/neo_brutalist.dart';
@@ -24,8 +26,17 @@ import 'background/schedule_battery.dart' show scheduleBatteryBackground;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await dotenv.load(fileName: '.env');
-  
+  await dotenv.load(
+    fileName: '.env',
+    isOptional: true,
+    mergeWith: {
+      'GEMINI_API_KEY': const String.fromEnvironment(
+        'GEMINI_API_KEY',
+        defaultValue: '',
+      ),
+    },
+  );
+
   try {
     await Workmanager().initialize(
       callbackDispatcher,
@@ -66,16 +77,19 @@ class MainScreen extends StatefulWidget {
   State<MainScreen> createState() => _MainScreenState();
 }
 
-class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+class _MainScreenState extends State<MainScreen>
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   final LocalizationService _loc = LocalizationService();
   final GeminiService _gemini = GeminiService();
+  final ChargingAiService _chargingAi = const ChargingAiService();
 
   // State Variables
   int _hp = 100;
   int _xp = 0;
   int _currentRankIndex = 0;
   String _currentSpecies = "cat"; // cat, dog, rabbit
-  String _currentTab = "tab-stats"; // tab-stats, tab-tips, tab-data, tab-sandbox
+  String _currentTab =
+      "tab-stats"; // tab-stats, tab-tips, tab-data, tab-sandbox
 
   // Simulation final state to restore to after dismissing popover
   int _simFinalHp = 100;
@@ -96,14 +110,19 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   String _speechText = "...";
   bool _speechVisible = false;
   Timer? _speechTimer;
+  Timer? _missionBriefTimer;
+  bool _missionBriefVisible = false;
 
   // Floating text messages
   final List<FloatingTextModel> _floatingTexts = [];
+  int _feedRewardTrigger = 0;
+  int _warningReactionTrigger = 0;
 
   // Simulation Metrics Data
   final Map<String, WeeklyMetrics> _weeklyStats = {};
   final Map<String, DailyMetrics> _dailyData = {};
   final GlobalMetrics _globalMetrics = GlobalMetrics();
+  late ChargingAiReport _aiReport;
   int _simulatedWeeksCount = 0;
 
   // Active Sessions Timeline Cards
@@ -112,7 +131,10 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   // Real-Time Tracking State
   bool _isCharging = false;
   int _currentBatteryLevel = 100;
+  String _currentBatteryState = 'unknown';
   int? _chargingStartLevel;
+  bool _chargeNudgeShown = false;
+  bool _hasLoadedRealStats = false;
   StreamSubscription<BatteryState>? _batterySubscription;
   Timer? _foregroundBatteryTimer;
   final Battery _battery = Battery();
@@ -142,6 +164,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _currentLanguage = _loc.currentLocale;
+    _aiReport = _chargingAi.analyze(const []);
 
     _screenShakeController = AnimationController(
       vsync: this,
@@ -153,6 +176,13 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
     // Load real-time battery stats
     _loadRealStats();
+    _missionBriefTimer = Timer(const Duration(milliseconds: 650), () {
+      if (mounted) {
+        setState(() {
+          _missionBriefVisible = true;
+        });
+      }
+    });
     // Initialize active charging detection
     _initBatteryListener();
     // Schedule background periodic battery log collection
@@ -169,6 +199,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     _batterySubscription?.cancel();
     _stopForegroundTimer();
     _speechTimer?.cancel();
+    _missionBriefTimer?.cancel();
     _timelineScrollController.dispose();
     _mainScrollController.dispose();
     _screenShakeController.dispose();
@@ -262,20 +293,24 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     String explanation = "";
     if (state == "sick" || state == "tired") {
       if (_globalMetrics.overcharges > _globalMetrics.criticalStarts) {
-        explanation = "Explain that you are hurt because the user overcharges you at night too many days.";
+        explanation =
+            "Explain that you are hurt because the user overcharges you at night too many days.";
       } else {
-        explanation = "Explain that you are starving because the user lets the battery drop too low.";
+        explanation =
+            "Explain that you are starving because the user lets the battery drop too low.";
       }
     }
 
     final prompt =
         "You are a $state $_currentSpecies at Rank $rankName. Your name is Sparky. $explanation Give a short, 1-sentence quote. If you are thriving, be boastful. If sick or tired, complain about the user's bad habits. Limit your response to 12 words maximum.";
     final sysPrompt = _loc.translate("sys_prompt_talk",
-        defaultVal: "You are a companion pet. You speak like a primitive caveman...");
+        defaultVal:
+            "You are a companion pet. You speak like a primitive caveman...");
 
     _showSpeechBubble(_loc.translate("thinking", defaultVal: "Thinking..."));
 
-    final response = await _gemini.fetchGeminiWithRetry(prompt: prompt, systemPrompt: sysPrompt);
+    final response = await _gemini.fetchGeminiWithRetry(
+        prompt: prompt, systemPrompt: sysPrompt);
 
     // Clean up quotes
     final cleanResponse = response.replaceAll('"', '').trim();
@@ -283,117 +318,17 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   }
 
   Future<void> _askPetAdvice() async {
-    if (_globalMetrics.total == 0) {
-      _showSpeechBubble("Run simulation first!");
-      return;
-    }
-
-    final rankName = _getRankName(_currentRankIndex);
-    final prompt =
-        "You are my $_currentSpecies pet currently at Rank $rankName. Here is my overall battery charging data: ${_globalMetrics.total} total charges, ${_globalMetrics.overcharges} overcharges (which burns you), ${_globalMetrics.perfectCharges} perfect charges (which makes you strong, 20-80%), and ${_globalMetrics.criticalStarts} times I starved you by letting the battery drop below 15%. Write a 2-paragraph performance review. Praise me for good things, scold me for bad things, and tell me what to do.";
-    final sysPrompt = _loc.translate("sys_prompt_advice",
-        defaultVal: "You are a companion pet. Give actionable tips about charging...");
-
-    // Show loading Dialog in advice tab
+    final report = _aiReport;
     setState(() {
-      _adviceContent = const Center(
-        child: Padding(
-          padding: EdgeInsets.all(24.0),
-          child: Column(
-            children: [
-              CircularProgressIndicator(color: NeoColors.primary),
-              SizedBox(height: 12),
-              Text(
-                "Pet is thinking hard...",
-                style: TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.bold),
-              )
-            ],
-          ),
-        ),
-      );
+      _adviceContent = _buildAiAdviceCard(report);
+      if (report.score >= 85 && report.hasEnoughData) {
+        _petGlowTrigger++;
+      }
     });
-
-    final response = await _gemini.fetchGeminiWithRetry(prompt: prompt, systemPrompt: sysPrompt);
-
-    setState(() {
-      _adviceContent = NeoCard(
-        borderWidth: 3.0,
-        shadowOffset: const Offset(3, 3),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(Icons.auto_awesome, color: NeoColors.primary),
-                const SizedBox(width: 8),
-                Text(
-                  _loc.translate('pets_advice', defaultVal: 'Pet Speaks').toUpperCase(),
-                  style: const TextStyle(
-                    fontFamily: 'Space Grotesk',
-                    fontWeight: FontWeight.bold,
-                    color: NeoColors.rpgText,
-                  ),
-                ),
-              ],
-            ),
-            const Divider(color: Colors.black26),
-            const SizedBox(height: 6),
-            RichText(
-              text: TextSpan(
-                style: const TextStyle(
-                  fontFamily: 'Space Grotesk',
-                  fontSize: 13.0,
-                  height: 1.4,
-                  color: NeoColors.rpgText,
-                ),
-                children: _parseMarkdownToTextSpans(
-                  response,
-                  const TextStyle(
-                    fontFamily: 'Space Grotesk',
-                    fontSize: 13.0,
-                    height: 1.4,
-                    color: NeoColors.rpgText,
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      );
-    });
+    _showSpeechBubble(report.petLine);
   }
 
   Widget? _adviceContent;
-
-  List<TextSpan> _parseMarkdownToTextSpans(String text, TextStyle baseStyle) {
-    final List<TextSpan> spans = [];
-    final RegExp regExp = RegExp(r'\*\*(.*?)\*\*');
-    int start = 0;
-    
-    for (final RegExpMatch match in regExp.allMatches(text)) {
-      if (match.start > start) {
-        spans.add(TextSpan(
-          text: text.substring(start, match.start),
-          style: baseStyle,
-        ));
-      }
-      spans.add(TextSpan(
-        text: match.group(1),
-        style: baseStyle.copyWith(fontWeight: FontWeight.bold),
-      ));
-      start = match.end;
-    }
-    
-    if (start < text.length) {
-      spans.add(TextSpan(
-        text: text.substring(start),
-        style: baseStyle,
-      ));
-    }
-    
-    return spans;
-  }
-
 
   // --- SIMULATION LOGIC ---
 
@@ -407,7 +342,8 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      _checkBatteryAndPendingSession();
+      // Import any charging records captured natively while the app was killed
+      _importNativeRecordsAndRefresh();
       _startForegroundTimer();
     } else if (state == AppLifecycleState.paused) {
       _saveCheckpoint();
@@ -415,22 +351,41 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     }
   }
 
+  /// Imports records from the native PowerConnectionReceiver (captured while
+  /// the app was killed), processes them into sessions, then refreshes UI.
+  Future<void> _importNativeRecordsAndRefresh() async {
+    try {
+      final imported = await BatterySnapshotService.importNativeRecords();
+      if (imported > 0) {
+        await BatteryDb().processRawRecordsIntoSessions();
+        debugPrint('VoltBuddy: Imported $imported bg records on resume');
+      }
+    } catch (e) {
+      debugPrint('VoltBuddy: Native record import failed: $e');
+    }
+    await _checkBatteryAndPendingSession();
+  }
+
   Future<void> _saveCheckpoint() async {
     try {
-      final state = await _battery.batteryState;
-      final currentLevel = await _battery.batteryLevel;
+      final snapshot = await BatterySnapshotService.current();
       await BatteryDb().insertRecord(BatteryRecord(
         timestamp: DateTime.now().toIso8601String(),
-        level: currentLevel,
-        state: state.toString().split('.').last,
+        level: snapshot.level,
+        state: snapshot.state,
       ));
     } catch (_) {}
   }
 
   void _initBatteryListener() async {
-    await _checkBatteryAndPendingSession();
+    // Start native 24/7 foreground service
+    await BatterySnapshotService.startBatteryService();
 
-    _batterySubscription = _battery.onBatteryStateChanged.listen((BatteryState state) {
+    // Import any records and complete sessions captured natively while app was closed
+    await _importNativeRecordsAndRefresh();
+
+    _batterySubscription =
+        _battery.onBatteryStateChanged.listen((BatteryState state) {
       _handleBatteryStateChange(state);
     });
 
@@ -439,7 +394,8 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
   void _startForegroundTimer() {
     _foregroundBatteryTimer?.cancel();
-    _foregroundBatteryTimer = Timer.periodic(const Duration(seconds: 10), (timer) {
+    _foregroundBatteryTimer =
+        Timer.periodic(const Duration(seconds: 10), (timer) {
       _checkBatteryAndPendingSession();
     });
   }
@@ -451,19 +407,21 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
   Future<void> _checkBatteryAndPendingSession() async {
     try {
-      final state = await _battery.batteryState;
-      final currentLevel = await _battery.batteryLevel;
-      final isNowCharging = state == BatteryState.charging || state == BatteryState.full;
-      
+      final snapshot = await BatterySnapshotService.current();
+      final currentLevel = snapshot.level;
+      final isNowCharging = snapshot.isChargeSessionState;
+
       final now = DateTime.now();
-      final dateStr = "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
-      final timeStr = "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}";
+      final dateStr =
+          "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+      final timeStr =
+          "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}";
 
       // Write record to database
       await BatteryDb().insertRecord(BatteryRecord(
         timestamp: now.toIso8601String(),
         level: currentLevel,
-        state: state.toString().split('.').last,
+        state: snapshot.state,
       ));
 
       // Process raw records to detect sessions
@@ -482,14 +440,34 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
         await BatteryDb().clearPendingSession();
       }
 
+      if (isNowCharging && currentLevel >= 85 && !_chargeNudgeShown) {
+        _chargeNudgeShown = true;
+        _warningReactionTrigger++;
+        final targetText = currentLevel >= 95
+            ? "High charge risk: unplug now."
+            : "85% target reached. Unplug soon.";
+        _spawnFloatingText("UNPLUG TARGET!", NeoColors.primary);
+        _showSpeechBubble(targetText);
+      } else if (!isNowCharging || currentLevel < 80) {
+        _chargeNudgeShown = false;
+      }
+
       if (isNowCharging != _isCharging) {
         if (isNowCharging) {
-          _spawnFloatingText("Charging Started! ⚡", const Color(0xFF2A9D8F));
-          _showSpeechBubble("Charging... Feeling the power! ⚡");
+          final pluggedText = snapshot.state == 'connectedNotCharging'
+              ? "Plugged In!"
+              : "Charging Started!";
+          _spawnFloatingText("$pluggedText ⚡", const Color(0xFF2A9D8F));
+          _showSpeechBubble(snapshot.state == 'connectedNotCharging'
+              ? "Plugged in. I'll watch the battery level."
+              : "Charging... Feeling the power! ⚡");
         } else {
-          final diff = (_chargingStartLevel != null) ? (currentLevel - _chargingStartLevel!) : 0;
+          final diff = (_chargingStartLevel != null)
+              ? (currentLevel - _chargingStartLevel!)
+              : 0;
           if (diff > 0) {
-            _spawnFloatingText("Charged to $currentLevel%!", const Color(0xFF2A9D8F));
+            _spawnFloatingText(
+                "Charged to $currentLevel%!", const Color(0xFF2A9D8F));
             _showSpeechBubble("Charged! +$diff% battery.");
           }
         }
@@ -503,11 +481,11 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
       setState(() {
         _currentBatteryLevel = currentLevel;
+        _currentBatteryState = snapshot.state;
         _chargingStartLevel = startPct;
       });
 
       await _loadRealStats();
-
     } catch (e) {
       debugPrint("Error in _checkBatteryAndPendingSession: $e");
     }
@@ -523,23 +501,23 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     try {
       final trimmedDate = dateStr.trim();
       final trimmedTime = timeStr.trim();
-      
+
       final dateParts = trimmedDate.split(RegExp(r'[-/]'));
       final timeParts = trimmedTime.split(':');
-      
+
       int year = DateTime.now().year;
       int month = DateTime.now().month;
       int day = DateTime.now().day;
       int hour = 0;
       int minute = 0;
       int second = 0;
-      
+
       if (dateParts.length == 3) {
         year = int.tryParse(dateParts[0]) ?? year;
         month = int.tryParse(dateParts[1]) ?? month;
         day = int.tryParse(dateParts[2]) ?? day;
       }
-      
+
       if (timeParts.isNotEmpty) {
         hour = int.tryParse(timeParts[0]) ?? 0;
         if (timeParts.length > 1) {
@@ -549,7 +527,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
           second = int.tryParse(timeParts[2]) ?? 0;
         }
       }
-      
+
       return DateTime(year, month, day, hour, minute, second);
     } catch (_) {
       return DateTime.now();
@@ -591,6 +569,9 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
         final bDt = _parseDateTime(b.startDate, b.startTime);
         return aDt.compareTo(bDt);
       });
+    final aiReport = _chargingAi.analyze(sortedSessions);
+    final hadLoadedRealStats = _hasLoadedRealStats;
+    final previousSessionTotal = _globalMetrics.total;
 
     if (sortedSessions.isNotEmpty) {
       // Parse dates at UTC midnight to avoid local DST/timezone truncation errors
@@ -614,12 +595,15 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
         final m = duration.inMinutes % 60;
         final durationStr = h > 0 ? '${h}h ${m}m' : '${m}m';
 
-        final startDatePadded = "${startDt.year}-${startDt.month.toString().padLeft(2, '0')}-${startDt.day.toString().padLeft(2, '0')}";
+        final startDatePadded =
+            "${startDt.year}-${startDt.month.toString().padLeft(2, '0')}-${startDt.day.toString().padLeft(2, '0')}";
 
         int hpDelta = 0;
         int xpDelta = 0;
-        String msg = _loc.translate("msg_standard_charge", defaultVal: "Standard Charge");
-        String flavorText = "Standard charging session. Sparky charged peacefully. Keep it between 20% and 80% to earn extra bonuses next time!";
+        String msg = _loc.translate("msg_standard_charge",
+            defaultVal: "Standard Charge");
+        String flavorText =
+            "Standard charging session. Sparky charged peacefully. Keep it between 20% and 80% to earn extra bonuses next time!";
         Color cardBg = Colors.white;
         Color cardBorder = NeoColors.rpgText;
         Color cardText = NeoColors.rpgText;
@@ -628,8 +612,10 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
         if (s.isOvercharge) {
           hpDelta = -15;
           xpDelta = 5;
-          msg = _loc.translate("msg_overcharge_penalty", defaultVal: "Overcharge Penalty");
-          flavorText = "Ouch! Left plugged in past 95%. This causes sustained high voltage stress, degrading battery health (-15 HP).";
+          msg = _loc.translate("msg_overcharge_penalty",
+              defaultVal: "Overcharge Penalty");
+          flavorText =
+              "Ouch! Left plugged in past 95%. This causes sustained high voltage stress, degrading battery health (-15 HP).";
           cardBg = const Color(0xFFFEE2E2);
           cardBorder = NeoColors.rpgBad;
           cardText = NeoColors.rpgBad;
@@ -638,8 +624,10 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
         } else if (s.isCriticalStart) {
           hpDelta = -10;
           xpDelta = 10;
-          msg = _loc.translate("msg_critical_starvation", defaultVal: "Critical Starvation");
-          flavorText = "Starvation warning! Charging started below 10%. Deep discharges put heavy stress on battery cells (-10 HP).";
+          msg = _loc.translate("msg_critical_starvation",
+              defaultVal: "Critical Starvation");
+          flavorText =
+              "Starvation warning! Charging started below 10%. Deep discharges put heavy stress on battery cells (-10 HP).";
           cardBg = const Color(0xFFFFEDD5);
           cardBorder = NeoColors.primary;
           cardText = const Color(0xFFC2410C);
@@ -648,8 +636,10 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
         } else if (s.isPerfectCharge) {
           hpDelta = 5;
           xpDelta = 30;
-          msg = _loc.translate("msg_perfect_charge", defaultVal: "Perfect Charge!");
-          flavorText = "Bussin! Started above 20% and stopped before 85%. Excellent battery stewardship (+5 HP, +30 XP).";
+          msg = _loc.translate("msg_perfect_charge",
+              defaultVal: "Perfect Charge!");
+          flavorText =
+              "Bussin! Started above 20% and stopped before 85%. Excellent battery stewardship (+5 HP, +30 XP).";
           cardBg = const Color(0xFFD1FAE5);
           cardBorder = NeoColors.rpgSurface;
           cardText = const Color(0xFF065F46);
@@ -665,7 +655,8 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
         final weekNum = (daysDiff / 7).floor() + 1;
         final weekKey = "Week $weekNum";
 
-        localWeeklyStats.putIfAbsent(weekKey, () => WeeklyMetrics(weekNum: weekNum, key: weekKey));
+        localWeeklyStats.putIfAbsent(
+            weekKey, () => WeeklyMetrics(weekNum: weekNum, key: weekKey));
         final weekMetrics = localWeeklyStats[weekKey]!;
         weekMetrics.xp += xpDelta;
         weekMetrics.hpDelta += hpDelta;
@@ -717,7 +708,8 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
         final id = _ranks[localRankIndex]["id"] as int;
         final fallback = _ranks[localRankIndex]["name"] as String;
-        dailyMetrics.rankName = _loc.translate("rank_$id", defaultVal: fallback);
+        dailyMetrics.rankName =
+            _loc.translate("rank_$id", defaultVal: fallback);
 
         final cardInfo = {
           'date': startDatePadded,
@@ -739,10 +731,15 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
       }
 
       final bool leveledUp = localRankIndex > _currentRankIndex;
-      final bool perfectChargeHappened = localGlobalMetrics.perfectCharges > _globalMetrics.perfectCharges;
+      final bool perfectChargeHappened =
+          localGlobalMetrics.perfectCharges > _globalMetrics.perfectCharges;
       final bool xpReached100 = (localXp >= 100 && _xp < 100);
-      final bool hasPenalty = localGlobalMetrics.overcharges > _globalMetrics.overcharges ||
-                              localGlobalMetrics.criticalStarts > _globalMetrics.criticalStarts;
+      final bool hasPenalty =
+          localGlobalMetrics.overcharges > _globalMetrics.overcharges ||
+              localGlobalMetrics.criticalStarts > _globalMetrics.criticalStarts;
+      final bool newRealSessionAdded =
+          hadLoadedRealStats && localGlobalMetrics.total > previousSessionTotal;
+      final newestSession = sortedSessions.last;
 
       setState(() {
         _hp = localHp;
@@ -766,21 +763,31 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
         _globalMetrics.criticalStarts = localGlobalMetrics.criticalStarts;
         _globalMetrics.perfectCharges = localGlobalMetrics.perfectCharges;
         _globalMetrics.totalXpEarned = localGlobalMetrics.totalXpEarned;
+        _aiReport = aiReport;
+        if (_adviceContent != null) {
+          _adviceContent = _buildAiAdviceCard(aiReport);
+        }
 
         _timelineCards.clear();
         _timelineCards.addAll(localTimelineCards);
 
         _simulatedWeeksCount = localWeeksCount;
+        _hasLoadedRealStats = true;
         _expandedCardIndices.clear();
       });
 
-      final finalRankName = _getRankName(_currentRankIndex);
-      _spawnFloatingText(
-        _loc.translate("final_rank", defaultVal: "Final Rank: {rank_name}").replaceAll("{rank_name}", finalRankName),
-        NeoColors.rpgGold,
-      );
+      if (newRealSessionAdded) {
+        final finalRankName = _getRankName(_currentRankIndex);
+        _spawnFloatingText(
+          _loc
+              .translate("final_rank", defaultVal: "Final Rank: {rank_name}")
+              .replaceAll("{rank_name}", finalRankName),
+          NeoColors.rpgGold,
+        );
+        _triggerSessionReward(newestSession);
+      }
 
-      if (leveledUp || hasPenalty) {
+      if (newRealSessionAdded && (leveledUp || hasPenalty)) {
         _triggerScreenShake();
       }
     } else {
@@ -798,16 +805,37 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
         _globalMetrics.criticalStarts = 0;
         _globalMetrics.perfectCharges = 0;
         _globalMetrics.totalXpEarned = 0;
+        _aiReport = aiReport;
+        if (_adviceContent != null) {
+          _adviceContent = _buildAiAdviceCard(aiReport);
+        }
         _timelineCards.clear();
         _simulatedWeeksCount = 0;
+        _hasLoadedRealStats = true;
         _expandedCardIndices.clear();
       });
     }
   }
 
-
-
-
+  void _triggerSessionReward(ChargeSession session) {
+    if (session.isPerfectCharge) {
+      setState(() {
+        _feedRewardTrigger++;
+        _petGlowTrigger++;
+      });
+      _spawnFloatingText("HEALTHY SNACK!", NeoColors.rpgAccent);
+      _showSpeechBubble("Healthy charge logged. Food reward unlocked.");
+    } else if (session.isOvercharge || session.isCriticalStart) {
+      setState(() {
+        _warningReactionTrigger++;
+      });
+      _spawnFloatingText("RISK DETECTED!", NeoColors.rpgBad);
+      _showSpeechBubble("That charging habit hurt my battery health.");
+    } else {
+      _spawnFloatingText("CHARGE LOGGED!", NeoColors.primary);
+      _showSpeechBubble("Good log. Aim for 20-85% to feed me next time.");
+    }
+  }
 
   void _triggerScreenShake() {
     _screenShakeController.forward(from: 0.0);
@@ -815,7 +843,8 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
   Future<void> _shareLogsCsv() async {
     final RenderBox? box = context.findRenderObject() as RenderBox?;
-    final rect = box != null ? (box.localToGlobal(Offset.zero) & box.size) : null;
+    final rect =
+        box != null ? (box.localToGlobal(Offset.zero) & box.size) : null;
 
     try {
       final sessions = await BatteryDb().getAllChargeSessions();
@@ -824,13 +853,51 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
         return;
       }
 
+      // Fetch device info from native Android
+      final deviceInfo = await BatterySnapshotService.getDeviceInfo();
+
       final csvBuffer = StringBuffer();
-      csvBuffer.writeln("Start Date,Start Time,Start Battery %,End Date,End Time,End Battery %,Is Overcharge,Is Critical Start,Is Perfect Charge");
-      
+
+      // Device & Study Metadata Header
+      csvBuffer.writeln("# ========================================================");
+      csvBuffer.writeln("# VoltBuddy Longitudinal Behavioral Research Logs");
+      csvBuffer.writeln("# Export Timestamp : ${DateTime.now().toIso8601String()}");
+      if (deviceInfo != null) {
+        final manufacturer = deviceInfo['manufacturer'] ?? 'Unknown';
+        final model = deviceInfo['model'] ?? 'Unknown';
+        final brand = deviceInfo['brand'] ?? 'Unknown';
+        final androidVer = deviceInfo['androidVersion'] ?? 'Unknown';
+        final sdkInt = deviceInfo['sdkInt'] ?? 'Unknown';
+        csvBuffer.writeln("# Device           : $manufacturer $model ($brand)");
+        csvBuffer.writeln("# Android OS       : $androidVer (SDK $sdkInt)");
+      }
+      final personaLabel = _currentLanguage.toUpperCase();
+      final currentRank = _getRankName(_currentRankIndex).toUpperCase();
+      csvBuffer.writeln("# Active Persona   : $personaLabel");
+      csvBuffer.writeln("# Current Pet Rank : $currentRank");
+      csvBuffer.writeln("# Current Pet HP   : $_hp/100");
+      csvBuffer.writeln("# Current Species  : $_currentSpecies");
+      csvBuffer.writeln("# Total Sessions   : ${sessions.length}");
+      csvBuffer.writeln("# ========================================================");
+      csvBuffer.writeln("#");
+
+      // Column headers
+      csvBuffer.writeln(
+          "Session #,Start Date,Start Time,Start Battery %,End Date,End Time,End Battery %,Battery Gained %,Duration (Mins),Charge Speed (%/hr),Time of Day,Is Overnight,Is Perfect Charge,Is Overcharge,Is Critical Start,Is Low Start,Power Source,Active Persona,Pet Rank,Pet HP,Device,Android OS");
+
+      // Data rows
+      final deviceLabel = deviceInfo != null
+          ? "${deviceInfo['manufacturer']} ${deviceInfo['model']}"
+          : "Unknown";
+      final osLabel = deviceInfo != null
+          ? "Android ${deviceInfo['androidVersion']} (SDK ${deviceInfo['sdkInt']})"
+          : "Android";
+
+      int sessionNum = 1;
       for (final s in sessions) {
         csvBuffer.writeln(
-          "${s.startDate},${s.startTime},${s.startPct},${s.endDate},${s.endTime},${s.endPct},${s.isOvercharge},${s.isCriticalStart},${s.isPerfectCharge}"
-        );
+            "$sessionNum,${s.startDate},${s.startTime},${s.startPct},${s.endDate},${s.endTime},${s.endPct},${s.batteryGained},${s.durationMinutes},${s.chargeRatePerHour},${s.timeOfDay},${s.isOvernight ? 'TRUE' : 'FALSE'},${s.isPerfectCharge ? 'TRUE' : 'FALSE'},${s.isOvercharge ? 'TRUE' : 'FALSE'},${s.isCriticalStart ? 'TRUE' : 'FALSE'},${s.isLowStart ? 'TRUE' : 'FALSE'},${s.source},$personaLabel,$currentRank,$_hp,$deviceLabel,$osLabel");
+        sessionNum++;
       }
 
       final tempDir = await getTemporaryDirectory();
@@ -858,7 +925,8 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
       builder: (BuildContext context) {
         return Dialog(
           backgroundColor: Colors.transparent,
-          insetPadding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 24.0),
+          insetPadding:
+              const EdgeInsets.symmetric(horizontal: 24.0, vertical: 24.0),
           child: NeoCard(
             backgroundColor: NeoColors.rpgBg,
             borderColor: NeoColors.rpgText,
@@ -872,11 +940,15 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
               children: [
                 Row(
                   children: [
-                    const Icon(Icons.warning_amber_rounded, color: NeoColors.rpgMuted, size: 28.0),
+                    const Icon(Icons.warning_amber_rounded,
+                        color: NeoColors.rpgMuted, size: 28.0),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        _loc.translate('clear_dialog_title', defaultVal: 'CLEAR ALL DATA?').toUpperCase(),
+                        _loc
+                            .translate('clear_dialog_title',
+                                defaultVal: 'CLEAR ALL DATA?')
+                            .toUpperCase(),
                         style: const TextStyle(
                           fontFamily: 'Space Grotesk',
                           fontWeight: FontWeight.w900,
@@ -889,7 +961,9 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                 ),
                 const SizedBox(height: 14),
                 Text(
-                  _loc.translate('clear_dialog_desc', defaultVal: 'This will permanently wipe all recorded charging sessions. Are you sure you want to proceed?'),
+                  _loc.translate('clear_dialog_desc',
+                      defaultVal:
+                          'This will permanently wipe all recorded charging sessions. Are you sure you want to proceed?'),
                   style: const TextStyle(
                     fontFamily: 'Space Grotesk',
                     fontWeight: FontWeight.bold,
@@ -905,10 +979,13 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                       backgroundColor: Colors.white,
                       borderColor: NeoColors.rpgText,
                       shadowColor: NeoColors.rpgText,
-                      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16.0, vertical: 8.0),
                       onPressed: () => Navigator.of(context).pop(false),
                       child: Text(
-                        _loc.translate('btn_cancel', defaultVal: 'CANCEL').toUpperCase(),
+                        _loc
+                            .translate('btn_cancel', defaultVal: 'CANCEL')
+                            .toUpperCase(),
                         style: const TextStyle(
                           fontFamily: 'Space Grotesk',
                           fontWeight: FontWeight.w900,
@@ -922,10 +999,13 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                       backgroundColor: NeoColors.rpgMuted,
                       borderColor: NeoColors.rpgText,
                       shadowColor: NeoColors.rpgText,
-                      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16.0, vertical: 8.0),
                       onPressed: () => Navigator.of(context).pop(true),
                       child: Text(
-                        _loc.translate('btn_clear', defaultVal: 'CONFIRM').toUpperCase(),
+                        _loc
+                            .translate('btn_clear', defaultVal: 'CONFIRM')
+                            .toUpperCase(),
                         style: const TextStyle(
                           fontFamily: 'Space Grotesk',
                           fontWeight: FontWeight.w900,
@@ -944,7 +1024,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     );
 
     if (confirmed == true) {
-      await BatteryDb().clearChargeSessions();
+      await BatteryDb().clearAllBatteryData();
       await _loadRealStats();
       _spawnFloatingText("Logs Cleared!", NeoColors.rpgMuted);
     }
@@ -971,9 +1051,12 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
       _simFinalRankIndex = _currentRankIndex;
 
       // Trigger evolution glow on XP milestones or rank increases
-      if (_currentRankIndex > oldRank || (_xp >= 100 && oldXp < 100) || _xp == 0) {
+      if (_currentRankIndex > oldRank ||
+          (_xp >= 100 && oldXp < 100) ||
+          _xp == 0) {
         _petGlowTrigger++;
       }
+      _feedRewardTrigger++;
     });
     if (_currentRankIndex > oldRank) {
       _triggerScreenShake();
@@ -985,6 +1068,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     setState(() {
       _hp = math.max(0, _hp - 20);
       _simFinalHp = _hp;
+      _warningReactionTrigger++;
     });
     _triggerScreenShake();
     _spawnFloatingText("-20 HP", NeoColors.rpgBad);
@@ -1023,93 +1107,178 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
             ? Colors.grey[500]!
             : NeoColors.rpgMuted;
 
-    final petName = _loc.translate('title', defaultVal: 'VoltBuddy').split(' ')[0];
+    final petName =
+        _loc.translate('title', defaultVal: 'VoltBuddy').split(' ')[0];
 
     // Constrain application width on tablet/desktop to max 480px, replicating max-w-md
     return Scaffold(
       backgroundColor: const Color(0xFFE8E5D1),
-      body: AnimatedBuilder(
-        animation: _screenShakeAnimation,
-        builder: (context, child) {
-          double dx = 0.0;
-          double dy = 0.0;
-          if (_screenShakeController.isAnimating) {
-            final random = math.Random();
-            final progress = _screenShakeAnimation.value;
-            final strength = 8.0 * (1.0 - progress);
-            dx = (random.nextDouble() - 0.5) * 2 * strength;
-            dy = (random.nextDouble() - 0.5) * 2 * strength;
-          }
-          return Transform.translate(
-            offset: Offset(dx, dy),
-            child: child,
-          );
-        },
-        child: Center(
-          child: Container(
-            constraints: const BoxConstraints(maxWidth: 480.0),
-            decoration: const BoxDecoration(
-              color: NeoColors.rpgBg,
-              border: Border.symmetric(
-                vertical: BorderSide(color: NeoColors.rpgText, width: 4.0),
-              ),
-            ),
-            child: Column(
-              children: [
-                // Header section
-                _buildHeader(),
-
-
-                // Scrollable body containing Pet Stage and Tabs content
-                Expanded(
-                  child: SingleChildScrollView(
-                    controller: _mainScrollController,
-                    physics: const ClampingScrollPhysics(),
-                    child: Column(
-                      children: [
-                        const SizedBox(height: 80),
-                        // Pet Arena Stage
-                        PetRenderer(
-                          species: _currentSpecies,
-                          rankIndex: _currentRankIndex,
-                          batch: batch,
-                          healthState: state,
-                          speechText: _speechText,
-                          speechVisible: _speechVisible,
-                          floatingTexts: _floatingTexts,
-                          glowTrigger: _petGlowTrigger,
-                          isCharging: _isCharging,
-                        ),
-                        const SizedBox(height: 12),
-
-                        // Asset details labels
-                        _buildPetDetails(statusText, statusColor, petName),
-
-                        // Progress health and exp bars
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 12.0),
-                          child: _buildProgressBars(),
-                        ),
-                        const SizedBox(height: 8),
-
-                        // Neo-brutalist navigation tabs bar
-                        _buildTabBar(),
-
-                        // Active Tab container block
-                        Container(
-                          color: Colors.white,
-                          padding: const EdgeInsets.all(16.0),
-                          child: _buildActiveTabContent(),
-                        ),
-                      ],
-                    ),
+      body: Stack(
+        children: [
+          AnimatedBuilder(
+            animation: _screenShakeAnimation,
+            builder: (context, child) {
+              double dx = 0.0;
+              double dy = 0.0;
+              if (_screenShakeController.isAnimating) {
+                final random = math.Random();
+                final progress = _screenShakeAnimation.value;
+                final strength = 8.0 * (1.0 - progress);
+                dx = (random.nextDouble() - 0.5) * 2 * strength;
+                dy = (random.nextDouble() - 0.5) * 2 * strength;
+              }
+              return Transform.translate(
+                offset: Offset(dx, dy),
+                child: child,
+              );
+            },
+            child: Center(
+              child: Container(
+                constraints: const BoxConstraints(maxWidth: 480.0),
+                decoration: const BoxDecoration(
+                  color: NeoColors.rpgBg,
+                  border: Border.symmetric(
+                    vertical: BorderSide(color: NeoColors.rpgText, width: 4.0),
                   ),
                 ),
-              ],
+                child: Column(
+                  children: [
+                    // Header section
+                    _buildHeader(),
+
+                    // Scrollable body containing Pet Stage and Tabs content
+                    Expanded(
+                      child: SingleChildScrollView(
+                        controller: _mainScrollController,
+                        physics: const ClampingScrollPhysics(),
+                        child: Column(
+                          children: [
+                            const SizedBox(height: 80),
+                            // Pet Arena Stage
+                            PetRenderer(
+                              species: _currentSpecies,
+                              rankIndex: _currentRankIndex,
+                              batch: batch,
+                              healthState: state,
+                              speechText: _speechText,
+                              speechVisible: _speechVisible,
+                              floatingTexts: _floatingTexts,
+                              glowTrigger: _petGlowTrigger,
+                              feedRewardTrigger: _feedRewardTrigger,
+                              warningReactionTrigger: _warningReactionTrigger,
+                              isCharging: _isCharging,
+                            ),
+                            const SizedBox(height: 12),
+
+                            // Asset details labels
+                            _buildPetDetails(statusText, statusColor, petName),
+
+                            // Progress health and exp bars
+                            Padding(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 24.0, vertical: 12.0),
+                              child: _buildProgressBars(),
+                            ),
+                            const SizedBox(height: 8),
+
+                            // Neo-brutalist navigation tabs bar
+                            _buildTabBar(),
+
+                            // Active Tab container block
+                            Container(
+                              color: Colors.white,
+                              padding: const EdgeInsets.all(16.0),
+                              child: _buildActiveTabContent(),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
-        ),
+          _buildMissionBriefOverlay(),
+        ],
       ),
+    );
+  }
+
+  String _missionTitle() {
+    if (_isCharging && _currentBatteryLevel >= 85) {
+      return 'Unplug quest';
+    }
+    if (_isCharging) {
+      return 'Charge watch active';
+    }
+    if (_aiReport.totalSessions == 0) {
+      return 'First quest';
+    }
+    if (_aiReport.score < 70 && _aiReport.hasEnoughData) {
+      return 'Recovery quest';
+    }
+    return 'Streak quest';
+  }
+
+  String _missionBody() {
+    if (_isCharging && _currentBatteryLevel >= 85) {
+      return 'Battery is at $_currentBatteryLevel%. Unplug soon to protect the healthy charge window.';
+    }
+    if (_isCharging) {
+      final start =
+          _chargingStartLevel == null ? '' : ' from $_chargingStartLevel%';
+      return 'VoltBuddy is tracking this session$start. Target: stop around 80-85%.';
+    }
+    if (_aiReport.totalSessions == 0) {
+      return 'Complete one real charging session. VoltBuddy will turn it into your first AI score and habit card.';
+    }
+    if (_aiReport.score < 70 && _aiReport.hasEnoughData) {
+      return _aiReport.nextAction;
+    }
+    return _aiReport.weeklyReport.focusArea;
+  }
+
+  Color _missionColor() {
+    if (_isCharging && _currentBatteryLevel >= 85) {
+      return NeoColors.rpgBad;
+    }
+    if (_isCharging) {
+      return NeoColors.rpgAccent;
+    }
+    return _aiScoreColor(_aiReport);
+  }
+
+  IconData _missionIcon() {
+    if (_isCharging && _currentBatteryLevel >= 85) {
+      return Icons.notification_important;
+    }
+    if (_isCharging) {
+      return Icons.bolt;
+    }
+    if (_aiReport.totalSessions == 0) {
+      return Icons.flag;
+    }
+    return Icons.psychology;
+  }
+
+  Widget _buildMissionBriefOverlay() {
+    return MissionBriefOverlay(
+      visible: _missionBriefVisible,
+      title: _missionTitle(),
+      body: _missionBody(),
+      color: _missionColor(),
+      icon: _missionIcon(),
+      scoreLabel: _aiReport.scoreLabel,
+      score: _aiReport.totalSessions == 0 ? null : _aiReport.score,
+      logCount: _aiReport.totalSessions,
+      isCharging: _isCharging,
+      batteryLevel: _currentBatteryLevel,
+      onDismiss: () {
+        setState(() {
+          _missionBriefVisible = false;
+        });
+      },
     );
   }
 
@@ -1146,10 +1315,12 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                     borderWidth: 2.5,
                     borderRadius: 12.0,
                     shadowOffset: const Offset(2, 2),
-                    padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 4.0),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10.0, vertical: 4.0),
                     child: Row(
                       children: [
-                        const Icon(Icons.star, color: NeoColors.primary, size: 16.0),
+                        const Icon(Icons.star,
+                            color: NeoColors.primary, size: 16.0),
                         const SizedBox(width: 4),
                         Text(
                           rankName.toUpperCase(),
@@ -1164,7 +1335,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                     ),
                   ),
                 ),
-      
+
                 // Right controls
                 Row(
                   children: [
@@ -1174,12 +1345,14 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                       borderWidth: 2.5,
                       borderRadius: 12.0,
                       shadowOffset: const Offset(2, 2),
-                      padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8.0, vertical: 4.0),
                       child: DropdownButtonHideUnderline(
                         child: DropdownButton<String>(
                           value: _currentLanguage,
                           isDense: true,
-                          icon: const Icon(Icons.arrow_drop_down, color: NeoColors.rpgText, size: 16.0),
+                          icon: const Icon(Icons.arrow_drop_down,
+                              color: NeoColors.rpgText, size: 16.0),
                           style: const TextStyle(
                             fontFamily: 'Space Grotesk',
                             fontWeight: FontWeight.bold,
@@ -1188,29 +1361,35 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                           ),
                           onChanged: _changeLanguage,
                           items: const [
-                            DropdownMenuItem(value: "regular", child: Text("REGULAR")),
-                            DropdownMenuItem(value: "genz", child: Text("GEN Z")),
+                            DropdownMenuItem(
+                                value: "regular", child: Text("REGULAR")),
+                            DropdownMenuItem(
+                                value: "genz", child: Text("GEN Z")),
                           ],
                         ),
                       ),
                     ),
                     const SizedBox(width: 8),
-      
+
                     // Time week indicator badge
                     NeoCard(
                       backgroundColor: Colors.white,
                       borderWidth: 2.5,
                       borderRadius: 12.0,
                       shadowOffset: const Offset(2, 2),
-                      padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 4.0),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10.0, vertical: 4.0),
                       child: Row(
                         children: [
-                          const Icon(Icons.calendar_month, color: NeoColors.rpgSurface, size: 15.0),
+                          const Icon(Icons.calendar_month,
+                              color: NeoColors.rpgSurface, size: 15.0),
                           const SizedBox(width: 4),
                           Text(
-                            _loc.translate('week_label',
+                            _loc
+                                .translate('week_label',
                                     defaultVal: 'Week {num}')
-                                .replaceAll('{num}', '${_simulatedWeeksCount == 0 ? 1 : _simulatedWeeksCount}')
+                                .replaceAll('{num}',
+                                    '${_simulatedWeeksCount == 0 ? 1 : _simulatedWeeksCount}')
                                 .toUpperCase(),
                             style: const TextStyle(
                               fontFamily: 'Space Grotesk',
@@ -1247,13 +1426,17 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     );
   }
 
-  Widget _buildPetDetails(String statusText, Color statusColor, String petName) {
+  Widget _buildPetDetails(
+      String statusText, Color statusColor, String petName) {
     final rankName = _getRankName(_currentRankIndex);
-    final speciesName = _currentSpecies.substring(0, 1).toUpperCase() + _currentSpecies.substring(1);
+    final speciesName = _currentSpecies.substring(0, 1).toUpperCase() +
+        _currentSpecies.substring(1);
     final batch = _ranks[_currentRankIndex]["batch"] as int;
 
     // "Drip: GOAT Cat (Drop 1)" or similar
-    final dripText = _loc.translate('asset_label', defaultVal: 'Asset: {rank_name} {species} (Batch {batch})')
+    final dripText = _loc
+        .translate('asset_label',
+            defaultVal: 'Asset: {rank_name} {species} (Batch {batch})')
         .replaceAll('{rank_name}', rankName)
         .replaceAll('{species}', speciesName)
         .replaceAll('{batch}', '$batch');
@@ -1296,9 +1479,12 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
           spacing: 6.0,
           runSpacing: 6.0,
           children: [
-            _buildSpeciesButton("cat", _loc.translate('cat_btn', defaultVal: '🐱 Cat')),
-            _buildSpeciesButton("dog", _loc.translate('dog_btn', defaultVal: '🐶 Dog')),
-            _buildSpeciesButton("rabbit", _loc.translate('rabbit_btn', defaultVal: '🐰 Rabbit')),
+            _buildSpeciesButton(
+                "cat", _loc.translate('cat_btn', defaultVal: '🐱 Cat')),
+            _buildSpeciesButton(
+                "dog", _loc.translate('dog_btn', defaultVal: '🐶 Dog')),
+            _buildSpeciesButton("rabbit",
+                _loc.translate('rabbit_btn', defaultVal: '🐰 Rabbit')),
           ],
         ),
         const SizedBox(height: 10),
@@ -1316,7 +1502,8 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                 borderRadius: BorderRadius.circular(20.0),
                 border: Border.all(color: NeoColors.rpgText, width: 3.0),
               ),
-              padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 3.0),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 14.0, vertical: 3.0),
               child: Text(
                 statusText.toUpperCase(),
                 style: const TextStyle(
@@ -1333,7 +1520,8 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
               backgroundColor: Colors.white,
               borderWidth: 2.0,
               borderRadius: 20.0,
-              padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 4.0),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12.0, vertical: 4.0),
               onPressed: _talkToPet,
               child: Text(
                 _loc.translate('talk_btn', defaultVal: 'Talk ✨').toUpperCase(),
@@ -1369,9 +1557,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                 const Icon(Icons.bolt, color: Colors.white, size: 16),
                 const SizedBox(width: 4),
                 Text(
-                  _chargingStartLevel != null
-                      ? "⚡ SPARKY IS CHARGING... ($_chargingStartLevel% -> $_currentBatteryLevel%)"
-                      : "⚡ SPARKY IS CHARGING... ($_currentBatteryLevel%)",
+                  _chargingStatusText(),
                   style: const TextStyle(
                     fontFamily: 'Space Grotesk',
                     fontWeight: FontWeight.w900,
@@ -1383,8 +1569,81 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
             ),
           ),
         ],
+        if (_isCharging && _currentBatteryLevel >= 85) ...[
+          const SizedBox(height: 10),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24.0),
+            child: NeoCard(
+              backgroundColor: const Color(0xFFFFEDD5),
+              borderColor: _currentBatteryLevel >= 95
+                  ? NeoColors.rpgBad
+                  : NeoColors.primary,
+              borderWidth: 3.0,
+              shadowOffset: const Offset(3, 3),
+              padding: const EdgeInsets.symmetric(
+                horizontal: 12.0,
+                vertical: 10.0,
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    _currentBatteryLevel >= 95
+                        ? Icons.battery_alert
+                        : Icons.notification_important,
+                    color: _currentBatteryLevel >= 95
+                        ? NeoColors.rpgBad
+                        : NeoColors.primary,
+                    size: 24.0,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _currentBatteryLevel >= 95
+                              ? 'HIGH CHARGE RISK'
+                              : '85% TARGET REACHED',
+                          style: TextStyle(
+                            fontFamily: 'Space Grotesk',
+                            fontWeight: FontWeight.w900,
+                            fontSize: 11.5,
+                            color: _currentBatteryLevel >= 95
+                                ? NeoColors.rpgBad
+                                : NeoColors.rpgText,
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        const Text(
+                          'Unplug soon to reduce full-charge stress during routine charging.',
+                          style: TextStyle(
+                            fontFamily: 'Space Grotesk',
+                            fontWeight: FontWeight.bold,
+                            fontSize: 10.5,
+                            height: 1.25,
+                            color: NeoColors.rpgText,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
       ],
     );
+  }
+
+  String _chargingStatusText() {
+    final verb = _currentBatteryState == 'connectedNotCharging'
+        ? 'PLUGGED IN'
+        : 'CHARGING';
+    return _chargingStartLevel != null
+        ? "⚡ SPARKY IS $verb... ($_chargingStartLevel% -> $_currentBatteryLevel%)"
+        : "⚡ SPARKY IS $verb... ($_currentBatteryLevel%)";
   }
 
   Widget _buildSpeciesButton(String species, String label) {
@@ -1434,7 +1693,9 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
       children: [
         // Battery/HP Progress bar
         NeoProgressBar(
-          label: _loc.translate('battery_health', defaultVal: 'Battery Health (HP)').toUpperCase(),
+          label: _loc
+              .translate('battery_health', defaultVal: 'Battery Health (HP)')
+              .toUpperCase(),
           value: _hp,
           maxValue: 100,
           height: 24.0,
@@ -1446,7 +1707,9 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
         // Clout/XP Progress bar
         NeoProgressBar(
-          label: _loc.translate('exp_rank_up', defaultVal: 'Exp to Rank Up').toUpperCase(),
+          label: _loc
+              .translate('exp_rank_up', defaultVal: 'Exp to Rank Up')
+              .toUpperCase(),
           value: _xp,
           maxValue: 100,
           height: 14.0,
@@ -1468,11 +1731,16 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
       ),
       child: Row(
         children: [
-          _buildTabButton("tab-stats", _loc.translate('tab_stats', defaultVal: 'Stats')),
-          _buildTabButton("tab-tips", _loc.translate('tab_tips', defaultVal: 'Tips')),
-          _buildTabButton("tab-data", _loc.translate('tab_logs', defaultVal: 'Logs')),
+          _buildTabButton(
+              "tab-stats", _loc.translate('tab_stats', defaultVal: 'Stats')),
+          _buildTabButton(
+              "tab-tips", _loc.translate('tab_tips', defaultVal: 'Tips')),
+          _buildTabButton(
+              "tab-data", _loc.translate('tab_logs', defaultVal: 'Logs')),
           if (_sandboxUnlocked)
-            _buildTabButton("tab-sandbox", _loc.translate('tab_sandbox', defaultVal: 'Dev'), isSandbox: true),
+            _buildTabButton(
+                "tab-sandbox", _loc.translate('tab_sandbox', defaultVal: 'Dev'),
+                isSandbox: true),
         ],
       ),
     );
@@ -1511,7 +1779,6 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
               letterSpacing: 0.5,
             ),
           ),
-
         ),
       ),
     );
@@ -1535,15 +1802,21 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        _buildWeeklyReportPanel(),
+        const SizedBox(height: 16),
+
         // Calendar Heatmap section
         HeatmapWidget(
           dailyData: _dailyData,
           globalMetrics: _globalMetrics,
           onDaySelected: (dayMetrics, petQuote) {
             setState(() {
-              if (dayMetrics.hpAtEndOfDay != null) _hp = dayMetrics.hpAtEndOfDay!;
-              if (dayMetrics.xpAtEndOfDay != null) _xp = dayMetrics.xpAtEndOfDay!;
-              if (dayMetrics.rankAtEndOfDay != null) _currentRankIndex = dayMetrics.rankAtEndOfDay!;
+              if (dayMetrics.hpAtEndOfDay != null)
+                _hp = dayMetrics.hpAtEndOfDay!;
+              if (dayMetrics.xpAtEndOfDay != null)
+                _xp = dayMetrics.xpAtEndOfDay!;
+              if (dayMetrics.rankAtEndOfDay != null)
+                _currentRankIndex = dayMetrics.rankAtEndOfDay!;
             });
             _showSpeechBubble(petQuote);
 
@@ -1568,19 +1841,621 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
         JourneyMapWidget(
           weeklyStats: _weeklyStats,
           totalXp: _globalMetrics.totalXpEarned,
-          xpPerWeek: _simulatedWeeksCount > 0 ? _globalMetrics.totalXpEarned / _simulatedWeeksCount : 0.0,
+          xpPerWeek: _simulatedWeeksCount > 0
+              ? _globalMetrics.totalXpEarned / _simulatedWeeksCount
+              : 0.0,
           totalWeeks: _simulatedWeeksCount,
         ),
       ],
     );
   }
 
+  Widget _buildWeeklyReportPanel() {
+    final report = _aiReport.weeklyReport;
+    final scoreColor = !report.hasData
+        ? NeoColors.rpgSilver
+        : report.score >= 85
+            ? NeoColors.rpgAccent
+            : report.score >= 70
+                ? NeoColors.primary
+                : report.score >= 50
+                    ? NeoColors.rpgMuted
+                    : NeoColors.rpgBad;
+
+    return NeoCard(
+      backgroundColor: const Color(0xFFE8F5EF),
+      borderColor: NeoColors.rpgText,
+      borderWidth: 3.0,
+      shadowOffset: const Offset(3, 3),
+      padding: const EdgeInsets.all(14.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 52,
+                height: 52,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(10.0),
+                  border: Border.all(color: scoreColor, width: 3.0),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: NeoColors.rpgText,
+                      offset: Offset(2, 2),
+                      blurRadius: 0,
+                    ),
+                  ],
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      report.hasData ? '${report.score}' : '--',
+                      style: TextStyle(
+                        fontFamily: 'Space Grotesk',
+                        fontWeight: FontWeight.w900,
+                        fontSize: 18.0,
+                        color: scoreColor,
+                      ),
+                    ),
+                    const Text(
+                      'WEEK',
+                      style: TextStyle(
+                        fontFamily: 'Space Grotesk',
+                        fontWeight: FontWeight.w900,
+                        fontSize: 7.5,
+                        color: NeoColors.rpgText,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'THIS WEEK REPORT',
+                      style: TextStyle(
+                        fontFamily: 'Space Grotesk',
+                        fontWeight: FontWeight.w900,
+                        fontSize: 13.0,
+                        color: NeoColors.rpgText,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      '${report.dateRange} | ${report.trendLabel}',
+                      style: TextStyle(
+                        fontFamily: 'Space Grotesk',
+                        fontWeight: FontWeight.w900,
+                        fontSize: 10.0,
+                        color: scoreColor,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8.0,
+            runSpacing: 8.0,
+            children: [
+              _buildAiMetricChip(
+                icon: Icons.bolt,
+                label: 'sessions',
+                value: '${report.totalSessions}',
+                color: NeoColors.rpgText,
+              ),
+              _buildAiMetricChip(
+                icon: Icons.restaurant,
+                label: 'healthy',
+                value: '${report.healthySessions}',
+                color: NeoColors.rpgAccent,
+              ),
+              _buildAiMetricChip(
+                icon: Icons.warning_amber,
+                label: 'risky',
+                value: '${report.riskySessions}',
+                color: report.riskySessions > 0
+                    ? NeoColors.rpgBad
+                    : NeoColors.rpgSilver,
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(10.0),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.74),
+              borderRadius: BorderRadius.circular(8.0),
+              border: Border.all(color: NeoColors.rpgText, width: 2.0),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'BEST: ${report.bestHabit}',
+                  style: const TextStyle(
+                    fontFamily: 'Space Grotesk',
+                    fontWeight: FontWeight.w900,
+                    fontSize: 10.5,
+                    height: 1.25,
+                    color: NeoColors.rpgText,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'FOCUS: ${report.focusArea}',
+                  style: TextStyle(
+                    fontFamily: 'Space Grotesk',
+                    fontWeight: FontWeight.w900,
+                    fontSize: 10.5,
+                    height: 1.25,
+                    color: scoreColor,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Color _aiScoreColor(ChargingAiReport report) {
+    if (report.totalSessions == 0) return NeoColors.rpgSilver;
+    if (report.score >= 85) return NeoColors.rpgAccent;
+    if (report.score >= 70) return NeoColors.primary;
+    if (report.score >= 50) return NeoColors.rpgMuted;
+    return NeoColors.rpgBad;
+  }
+
+  Color _habitSeverityColor(HabitSeverity severity) {
+    switch (severity) {
+      case HabitSeverity.good:
+        return NeoColors.rpgAccent;
+      case HabitSeverity.watch:
+        return NeoColors.primary;
+      case HabitSeverity.risky:
+        return NeoColors.rpgBad;
+    }
+  }
+
+  IconData _habitSeverityIcon(HabitSeverity severity) {
+    switch (severity) {
+      case HabitSeverity.good:
+        return Icons.check_circle;
+      case HabitSeverity.watch:
+        return Icons.visibility;
+      case HabitSeverity.risky:
+        return Icons.warning_amber;
+    }
+  }
+
+  Color _recommendationColor(RecommendationPriority priority) {
+    switch (priority) {
+      case RecommendationPriority.low:
+        return NeoColors.rpgAccent;
+      case RecommendationPriority.medium:
+        return NeoColors.primary;
+      case RecommendationPriority.high:
+        return NeoColors.rpgBad;
+    }
+  }
+
+  String _priorityLabel(RecommendationPriority priority) {
+    switch (priority) {
+      case RecommendationPriority.low:
+        return 'LOW';
+      case RecommendationPriority.medium:
+        return 'MED';
+      case RecommendationPriority.high:
+        return 'HIGH';
+    }
+  }
+
+  Widget _buildAiMetricChip({
+    required IconData icon,
+    required String label,
+    required String value,
+    required Color color,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 6.0),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(8.0),
+        border: Border.all(color: color, width: 1.5),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, color: color, size: 14.0),
+          const SizedBox(width: 5),
+          Text(
+            '$label $value'.toUpperCase(),
+            style: const TextStyle(
+              fontFamily: 'Space Grotesk',
+              fontWeight: FontWeight.w900,
+              fontSize: 9.0,
+              color: NeoColors.rpgText,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAiCoachPanel() {
+    final report = _aiReport;
+    final scoreColor = _aiScoreColor(report);
+    final scoreText = report.totalSessions == 0 ? '--' : '${report.score}';
+
+    return NeoCard(
+      backgroundColor: const Color(0xFFFFF7D6),
+      borderColor: NeoColors.rpgText,
+      borderWidth: 3.0,
+      shadowOffset: const Offset(3, 3),
+      padding: const EdgeInsets.all(14.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Container(
+                width: 76,
+                height: 76,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: scoreColor, width: 5.0),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: NeoColors.rpgText,
+                      offset: Offset(2, 2),
+                      blurRadius: 0,
+                    ),
+                  ],
+                ),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      scoreText,
+                      style: TextStyle(
+                        fontFamily: 'Space Grotesk',
+                        fontWeight: FontWeight.w900,
+                        fontSize: report.totalSessions == 0 ? 21.0 : 24.0,
+                        color: scoreColor,
+                      ),
+                    ),
+                    const Text(
+                      'AI SCORE',
+                      style: TextStyle(
+                        fontFamily: 'Space Grotesk',
+                        fontWeight: FontWeight.w900,
+                        fontSize: 8.0,
+                        color: NeoColors.rpgText,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.psychology,
+                            color: NeoColors.primary, size: 20.0),
+                        SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            'VOLTBUDDY AI COACH',
+                            style: TextStyle(
+                              fontFamily: 'Space Grotesk',
+                              fontWeight: FontWeight.w900,
+                              fontSize: 13.0,
+                              color: NeoColors.rpgText,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${report.scoreLabel} | ${report.riskLevel}',
+                      style: TextStyle(
+                        fontFamily: 'Space Grotesk',
+                        fontWeight: FontWeight.w900,
+                        fontSize: 12.0,
+                        color: scoreColor,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      report.confidenceLabel.toUpperCase(),
+                      style: TextStyle(
+                        fontFamily: 'Space Grotesk',
+                        fontWeight: FontWeight.bold,
+                        fontSize: 9.5,
+                        color: NeoColors.rpgText.withValues(alpha: 0.65),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            report.summary,
+            style: const TextStyle(
+              fontFamily: 'Space Grotesk',
+              fontWeight: FontWeight.bold,
+              fontSize: 11.5,
+              height: 1.35,
+              color: NeoColors.rpgText,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 7.0,
+            runSpacing: 7.0,
+            children: [
+              _buildAiMetricChip(
+                icon: Icons.history,
+                label: 'logs',
+                value: '${report.totalSessions}',
+                color: NeoColors.rpgText,
+              ),
+              _buildAiMetricChip(
+                icon: Icons.stars,
+                label: 'ideal',
+                value: '${report.perfectSessions}',
+                color: NeoColors.rpgAccent,
+              ),
+              _buildAiMetricChip(
+                icon: Icons.battery_alert,
+                label: 'risk',
+                value:
+                    '${report.overchargeSessions + report.criticalStartSessions}',
+                color:
+                    report.overchargeSessions + report.criticalStartSessions > 0
+                        ? NeoColors.rpgBad
+                        : NeoColors.rpgSilver,
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 10.0, vertical: 8.0),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.75),
+              borderRadius: BorderRadius.circular(8.0),
+              border: Border.all(color: NeoColors.rpgText, width: 2.0),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.flag, color: scoreColor, size: 18.0),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    report.nextAction,
+                    style: const TextStyle(
+                      fontFamily: 'Space Grotesk',
+                      fontWeight: FontWeight.w900,
+                      fontSize: 11.0,
+                      height: 1.25,
+                      color: NeoColors.rpgText,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHabitRow(ChargingHabit habit) {
+    final color = _habitSeverityColor(habit.severity);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10.0),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(_habitSeverityIcon(habit.severity), color: color, size: 18.0),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  habit.title.toUpperCase(),
+                  style: TextStyle(
+                    fontFamily: 'Space Grotesk',
+                    fontWeight: FontWeight.w900,
+                    fontSize: 10.5,
+                    color: color,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  habit.evidence,
+                  style: TextStyle(
+                    fontFamily: 'Space Grotesk',
+                    fontWeight: FontWeight.bold,
+                    fontSize: 11.0,
+                    height: 1.25,
+                    color: NeoColors.rpgText.withValues(alpha: 0.82),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRecommendationRow(ChargingRecommendation recommendation) {
+    final color = _recommendationColor(recommendation.priority);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12.0),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6.0, vertical: 3.0),
+            decoration: BoxDecoration(
+              color: color,
+              borderRadius: BorderRadius.circular(6.0),
+              border: Border.all(color: NeoColors.rpgText, width: 1.5),
+            ),
+            child: Text(
+              _priorityLabel(recommendation.priority),
+              style: const TextStyle(
+                fontFamily: 'Space Grotesk',
+                fontWeight: FontWeight.w900,
+                fontSize: 8.0,
+                color: Colors.white,
+              ),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  recommendation.title.toUpperCase(),
+                  style: const TextStyle(
+                    fontFamily: 'Space Grotesk',
+                    fontWeight: FontWeight.w900,
+                    fontSize: 10.5,
+                    color: NeoColors.rpgText,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  recommendation.body,
+                  style: const TextStyle(
+                    fontFamily: 'Space Grotesk',
+                    fontWeight: FontWeight.bold,
+                    fontSize: 11.0,
+                    height: 1.25,
+                    color: NeoColors.rpgText,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  recommendation.impact.toUpperCase(),
+                  style: TextStyle(
+                    fontFamily: 'Space Grotesk',
+                    fontWeight: FontWeight.w900,
+                    fontSize: 8.5,
+                    color: color,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAiAdviceCard(ChargingAiReport report) {
+    return NeoCard(
+      borderWidth: 3.0,
+      shadowOffset: const Offset(3, 3),
+      backgroundColor: Colors.white,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.auto_awesome, color: NeoColors.primary),
+              const SizedBox(width: 8),
+              Text(
+                _loc
+                    .translate('pets_advice', defaultVal: 'Pet Speaks')
+                    .toUpperCase(),
+                style: const TextStyle(
+                  fontFamily: 'Space Grotesk',
+                  fontWeight: FontWeight.w900,
+                  color: NeoColors.rpgText,
+                ),
+              ),
+            ],
+          ),
+          const Divider(color: Colors.black26),
+          const SizedBox(height: 6),
+          Text(
+            report.petLine,
+            style: const TextStyle(
+              fontFamily: 'Space Grotesk',
+              fontSize: 13.0,
+              height: 1.35,
+              fontWeight: FontWeight.bold,
+              color: NeoColors.rpgText,
+            ),
+          ),
+          const SizedBox(height: 14),
+          const Text(
+            'DETECTED HABITS',
+            style: TextStyle(
+              fontFamily: 'Space Grotesk',
+              fontWeight: FontWeight.w900,
+              fontSize: 10.0,
+              color: NeoColors.rpgText,
+            ),
+          ),
+          const SizedBox(height: 8),
+          ...report.habits.take(4).map(_buildHabitRow),
+          const SizedBox(height: 4),
+          const Text(
+            'NEXT RECOMMENDATIONS',
+            style: TextStyle(
+              fontFamily: 'Space Grotesk',
+              fontWeight: FontWeight.w900,
+              fontSize: 10.0,
+              color: NeoColors.rpgText,
+            ),
+          ),
+          const SizedBox(height: 8),
+          ...report.recommendations.take(4).map(_buildRecommendationRow),
+        ],
+      ),
+    );
+  }
+
   Widget _buildTipsTab() {
-    final adviceBtn = _loc.translate('ask_advice_btn', defaultVal: 'Ask Pet for Advice ✨');
-    final wisdomTitle1 = _loc.translate('rule_20_80_title', defaultVal: 'The Golden Rule: 20-80');
-    final wisdomDesc1 = _loc.translate('rule_20_80_desc', defaultVal: 'Keep battery energy between 20-80%...');
-    final wisdomTitle2 = _loc.translate('night_charge_title', defaultVal: 'Beware the Night Charge');
-    final wisdomDesc2 = _loc.translate('night_charge_desc', defaultVal: 'Leaving plugged in overnight damages HP...');
+    final adviceBtn =
+        _loc.translate('ask_advice_btn', defaultVal: 'Generate AI Advice');
+    final wisdomTitle1 = _loc.translate('rule_20_80_title',
+        defaultVal: 'The Golden Rule: 20-80');
+    final wisdomDesc1 = _loc.translate('rule_20_80_desc',
+        defaultVal: 'Keep battery energy between 20-80%...');
+    final wisdomTitle2 = _loc.translate('night_charge_title',
+        defaultVal: 'Beware the Night Charge');
+    final wisdomDesc2 = _loc.translate('night_charge_desc',
+        defaultVal: 'Leaving plugged in overnight damages HP...');
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1591,12 +2466,20 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
             const Icon(Icons.psychology, color: NeoColors.primary),
             const SizedBox(width: 8),
             Text(
-              _loc.translate('pets_advice', defaultVal: "Pet's Advice").toUpperCase(),
-              style: const TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.bold, fontSize: 13.0, color: NeoColors.rpgText),
+              _loc
+                  .translate('pets_advice', defaultVal: "Pet's Advice")
+                  .toUpperCase(),
+              style: const TextStyle(
+                  fontFamily: 'Space Grotesk',
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13.0,
+                  color: NeoColors.rpgText),
             ),
           ],
         ),
         const SizedBox(height: 12),
+        _buildAiCoachPanel(),
+        const SizedBox(height: 16),
 
         // Ask advice button
         NeoButton(
@@ -1611,11 +2494,14 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
               const SizedBox(width: 8),
               Text(
                 adviceBtn.toUpperCase(),
-                style: const TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.w900, color: Colors.white, fontSize: 12.0),
+                style: const TextStyle(
+                    fontFamily: 'Space Grotesk',
+                    fontWeight: FontWeight.w900,
+                    color: Colors.white,
+                    fontSize: 12.0),
               ),
             ],
           ),
-
         ),
         const SizedBox(height: 16),
 
@@ -1626,11 +2512,14 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
               decoration: BoxDecoration(
                 color: NeoColors.rpgBg,
                 borderRadius: BorderRadius.circular(12.0),
-                border: Border.all(color: NeoColors.rpgText.withOpacity(0.2), width: 2.0),
+                border: Border.all(
+                    color: NeoColors.rpgText.withOpacity(0.2), width: 2.0),
               ),
               child: Center(
                 child: Text(
-                  _loc.translate('run_sim_tips_msg', defaultVal: 'Run simulation first to get personalized advice!'),
+                  _loc.translate('run_sim_tips_msg',
+                      defaultVal:
+                          'Tap Generate AI Advice to see the habits and recommendations behind your score.'),
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     fontFamily: 'Space Grotesk',
@@ -1645,8 +2534,14 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
         // General wisdom header
         Text(
-          _loc.translate('general_wisdom', defaultVal: 'General Wisdom').toUpperCase(),
-          style: TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.bold, fontSize: 11.5, color: NeoColors.rpgText.withOpacity(0.6)),
+          _loc
+              .translate('general_wisdom', defaultVal: 'General Wisdom')
+              .toUpperCase(),
+          style: TextStyle(
+              fontFamily: 'Space Grotesk',
+              fontWeight: FontWeight.bold,
+              fontSize: 11.5,
+              color: NeoColors.rpgText.withOpacity(0.6)),
         ),
         const Divider(color: Colors.black12, height: 12),
         const SizedBox(height: 6),
@@ -1659,7 +2554,8 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Icon(Icons.battery_charging_full, color: NeoColors.rpgSurface, size: 28.0),
+              const Icon(Icons.battery_charging_full,
+                  color: NeoColors.rpgSurface, size: 28.0),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(
@@ -1667,12 +2563,20 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                   children: [
                     Text(
                       wisdomTitle1.toUpperCase(),
-                      style: const TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.w900, fontSize: 12.5, color: NeoColors.rpgText),
+                      style: const TextStyle(
+                          fontFamily: 'Space Grotesk',
+                          fontWeight: FontWeight.w900,
+                          fontSize: 12.5,
+                          color: NeoColors.rpgText),
                     ),
                     const SizedBox(height: 4),
                     Text(
                       wisdomDesc1,
-                      style: TextStyle(fontFamily: 'Space Grotesk', fontSize: 11.5, height: 1.3, color: NeoColors.rpgText.withOpacity(0.8)),
+                      style: TextStyle(
+                          fontFamily: 'Space Grotesk',
+                          fontSize: 11.5,
+                          height: 1.3,
+                          color: NeoColors.rpgText.withOpacity(0.8)),
                     ),
                   ],
                 ),
@@ -1698,12 +2602,20 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                   children: [
                     Text(
                       wisdomTitle2.toUpperCase(),
-                      style: const TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.w900, fontSize: 12.5, color: NeoColors.rpgText),
+                      style: const TextStyle(
+                          fontFamily: 'Space Grotesk',
+                          fontWeight: FontWeight.w900,
+                          fontSize: 12.5,
+                          color: NeoColors.rpgText),
                     ),
                     const SizedBox(height: 4),
                     Text(
                       wisdomDesc2,
-                      style: TextStyle(fontFamily: 'Space Grotesk', fontSize: 11.5, height: 1.3, color: NeoColors.rpgText.withOpacity(0.8)),
+                      style: TextStyle(
+                          fontFamily: 'Space Grotesk',
+                          fontSize: 11.5,
+                          height: 1.3,
+                          color: NeoColors.rpgText.withOpacity(0.8)),
                     ),
                   ],
                 ),
@@ -1733,7 +2645,11 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                 SizedBox(width: 8),
                 Text(
                   "REAL CHARGE HISTORY",
-                  style: TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.bold, fontSize: 13.0, color: NeoColors.rpgText),
+                  style: TextStyle(
+                      fontFamily: 'Space Grotesk',
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13.0,
+                      color: NeoColors.rpgText),
                 ),
               ],
             ),
@@ -1745,7 +2661,8 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                     backgroundColor: NeoColors.primary,
                     borderColor: NeoColors.rpgText,
                     shadowColor: NeoColors.rpgText,
-                    padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 6.0),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10.0, vertical: 6.0),
                     onPressed: _shareLogsCsv,
                     child: const Row(
                       mainAxisSize: MainAxisSize.min,
@@ -1754,7 +2671,11 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                         SizedBox(width: 4),
                         Text(
                           "SHARE CSV",
-                          style: TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.w900, color: Colors.white, fontSize: 10.0),
+                          style: TextStyle(
+                              fontFamily: 'Space Grotesk',
+                              fontWeight: FontWeight.w900,
+                              color: Colors.white,
+                              fontSize: 10.0),
                         ),
                       ],
                     ),
@@ -1764,11 +2685,16 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                     backgroundColor: NeoColors.rpgMuted,
                     borderColor: NeoColors.rpgText,
                     shadowColor: NeoColors.rpgText,
-                    padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 6.0),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10.0, vertical: 6.0),
                     onPressed: () => _showClearConfirmationDialog(context),
                     child: const Text(
                       "CLEAR ALL",
-                      style: TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.w900, color: Colors.white, fontSize: 10.0),
+                      style: TextStyle(
+                          fontFamily: 'Space Grotesk',
+                          fontWeight: FontWeight.w900,
+                          color: Colors.white,
+                          fontSize: 10.0),
                     ),
                   ),
                 ],
@@ -1804,7 +2730,11 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
           const SizedBox(height: 20),
           const Text(
             "REAL CHARGING SESSIONS",
-            style: TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.bold, fontSize: 11.5, color: NeoColors.rpgText),
+            style: TextStyle(
+                fontFamily: 'Space Grotesk',
+                fontWeight: FontWeight.bold,
+                fontSize: 11.5,
+                color: NeoColors.rpgText),
           ),
           const Divider(color: Colors.black26),
           const SizedBox(height: 6),
@@ -1816,8 +2746,10 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
             itemCount: _timelineCards.length,
             itemBuilder: (context, idx) {
               final card = _timelineCards[idx];
-              final String timeLabel = "${card['date']} ${card['time'].toString().substring(0, 5)}";
-              final String rangeLabel = "${card['startPct']}% → ${card['endPct']}%";
+              final String timeLabel =
+                  "${card['date']} ${card['time'].toString().substring(0, 5)}";
+              final String rangeLabel =
+                  "${card['startPct']}% → ${card['endPct']}%";
               final int hpDelta = card['hpDelta'] as int;
               final int xpDelta = card['xpDelta'] as int;
               final bool isExpanded = _expandedCardIndices.contains(idx);
@@ -1839,7 +2771,8 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                     borderColor: card['cardBorder'] as Color,
                     borderWidth: 3.0,
                     shadowOffset: const Offset(2, 2),
-                    padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12.0, vertical: 8.0),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
@@ -1854,9 +2787,13 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                                   decoration: BoxDecoration(
                                     color: Colors.white.withValues(alpha: 0.5),
                                     shape: BoxShape.circle,
-                                    border: Border.all(color: card['cardText'] as Color, width: 1.5),
+                                    border: Border.all(
+                                        color: card['cardText'] as Color,
+                                        width: 1.5),
                                   ),
-                                  child: Icon(card['icon'] as IconData, color: card['cardText'] as Color, size: 18.0),
+                                  child: Icon(card['icon'] as IconData,
+                                      color: card['cardText'] as Color,
+                                      size: 18.0),
                                 ),
                                 const SizedBox(width: 10),
                                 Column(
@@ -1868,7 +2805,8 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                                         fontFamily: 'Space Grotesk',
                                         fontSize: 8.5,
                                         fontWeight: FontWeight.bold,
-                                        color: (card['cardText'] as Color).withValues(alpha: 0.7),
+                                        color: (card['cardText'] as Color)
+                                            .withValues(alpha: 0.7),
                                       ),
                                     ),
                                     Text(
@@ -1888,11 +2826,14 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                               crossAxisAlignment: CrossAxisAlignment.end,
                               children: [
                                 Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 6, vertical: 2),
                                   decoration: BoxDecoration(
                                     color: Colors.white.withValues(alpha: 0.5),
                                     borderRadius: BorderRadius.circular(6.0),
-                                    border: Border.all(color: card['cardText'] as Color, width: 1.0),
+                                    border: Border.all(
+                                        color: card['cardText'] as Color,
+                                        width: 1.0),
                                   ),
                                   child: Text(
                                     card['msg'].toString().toUpperCase(),
@@ -1927,7 +2868,8 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                               children: [
                                 const Divider(color: Colors.black12, height: 8),
                                 Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceBetween,
                                   children: [
                                     Text(
                                       "SESSION DETAILS",
@@ -1935,7 +2877,8 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                                         fontFamily: 'Space Grotesk',
                                         fontSize: 9.0,
                                         fontWeight: FontWeight.w900,
-                                        color: (card['cardText'] as Color).withValues(alpha: 0.8),
+                                        color: (card['cardText'] as Color)
+                                            .withValues(alpha: 0.8),
                                       ),
                                     ),
                                     Text(
@@ -1944,7 +2887,8 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                                         fontFamily: 'Space Grotesk',
                                         fontSize: 9.0,
                                         fontWeight: FontWeight.bold,
-                                        color: NeoColors.rpgText.withValues(alpha: 0.6),
+                                        color: NeoColors.rpgText
+                                            .withValues(alpha: 0.6),
                                       ),
                                     ),
                                   ],
@@ -1962,7 +2906,9 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                               ],
                             ),
                           ),
-                          crossFadeState: isExpanded ? CrossFadeState.showSecond : CrossFadeState.showFirst,
+                          crossFadeState: isExpanded
+                              ? CrossFadeState.showSecond
+                              : CrossFadeState.showFirst,
                           duration: const Duration(milliseconds: 250),
                         ),
                       ],
@@ -1977,9 +2923,9 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     );
   }
 
-
   Widget _buildSandboxTab() {
-    final flexProgTitle = _loc.translate('tier_progression', defaultVal: '7-Tier Rank Progression');
+    final flexProgTitle = _loc.translate('tier_progression',
+        defaultVal: '7-Tier Rank Progression');
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1987,7 +2933,11 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
         // Level tier Progression setter
         Text(
           flexProgTitle.toUpperCase(),
-          style: TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.bold, fontSize: 10.0, color: NeoColors.rpgText.withOpacity(0.6)),
+          style: TextStyle(
+              fontFamily: 'Space Grotesk',
+              fontWeight: FontWeight.bold,
+              fontSize: 10.0,
+              color: NeoColors.rpgText.withOpacity(0.6)),
         ),
         const SizedBox(height: 6),
         Container(
@@ -2008,7 +2958,11 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
             value: _currentRankIndex,
             isExpanded: true,
             underline: const SizedBox.shrink(),
-            style: const TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.bold, color: NeoColors.rpgText, fontSize: 13.0),
+            style: const TextStyle(
+                fontFamily: 'Space Grotesk',
+                fontWeight: FontWeight.bold,
+                color: NeoColors.rpgText,
+                fontSize: 13.0),
             onChanged: (val) {
               if (val != null) {
                 setState(() {
@@ -2040,12 +2994,20 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                 onPressed: _manualGoodCharge,
                 child: Column(
                   children: [
-                    const Icon(Icons.battery_charging_full, color: Colors.white),
+                    const Icon(Icons.battery_charging_full,
+                        color: Colors.white),
                     const SizedBox(height: 4),
                     Text(
-                      _loc.translate('good_charge', defaultVal: 'Good Charge (+XP)').toUpperCase(),
+                      _loc
+                          .translate('good_charge',
+                              defaultVal: 'Good Charge (+XP)')
+                          .toUpperCase(),
                       textAlign: TextAlign.center,
-                      style: const TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.bold, fontSize: 9.0, color: Colors.white),
+                      style: const TextStyle(
+                          fontFamily: 'Space Grotesk',
+                          fontWeight: FontWeight.bold,
+                          fontSize: 9.0,
+                          color: Colors.white),
                     ),
                   ],
                 ),
@@ -2061,9 +3023,16 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                     const Icon(Icons.battery_alert, color: Colors.white),
                     const SizedBox(height: 4),
                     Text(
-                      _loc.translate('overcharge', defaultVal: 'Overcharge (-HP)').toUpperCase(),
+                      _loc
+                          .translate('overcharge',
+                              defaultVal: 'Overcharge (-HP)')
+                          .toUpperCase(),
                       textAlign: TextAlign.center,
-                      style: const TextStyle(fontFamily: 'Space Grotesk', fontWeight: FontWeight.bold, fontSize: 9.0, color: Colors.white),
+                      style: const TextStyle(
+                          fontFamily: 'Space Grotesk',
+                          fontWeight: FontWeight.bold,
+                          fontSize: 9.0,
+                          color: Colors.white),
                     ),
                   ],
                 ),
@@ -2116,6 +3085,447 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
         ),
       ),
     );
+  }
+}
+
+class MissionBriefOverlay extends StatefulWidget {
+  final bool visible;
+  final String title;
+  final String body;
+  final Color color;
+  final IconData icon;
+  final String scoreLabel;
+  final int? score;
+  final int logCount;
+  final bool isCharging;
+  final int batteryLevel;
+  final VoidCallback onDismiss;
+
+  const MissionBriefOverlay({
+    super.key,
+    required this.visible,
+    required this.title,
+    required this.body,
+    required this.color,
+    required this.icon,
+    required this.scoreLabel,
+    required this.score,
+    required this.logCount,
+    required this.isCharging,
+    required this.batteryLevel,
+    required this.onDismiss,
+  });
+
+  @override
+  State<MissionBriefOverlay> createState() => _MissionBriefOverlayState();
+}
+
+class _MissionBriefOverlayState extends State<MissionBriefOverlay>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned.fill(
+      child: IgnorePointer(
+        ignoring: !widget.visible,
+        child: AnimatedOpacity(
+          opacity: widget.visible ? 1.0 : 0.0,
+          duration: const Duration(milliseconds: 260),
+          curve: Curves.easeOut,
+          child: Container(
+            color: Colors.black.withValues(alpha: 0.34),
+            child: SafeArea(
+              child: Center(
+                child: AnimatedSlide(
+                  offset: widget.visible ? Offset.zero : const Offset(0, 0.10),
+                  duration: const Duration(milliseconds: 420),
+                  curve: Curves.easeOutBack,
+                  child: AnimatedScale(
+                    scale: widget.visible ? 1.0 : 0.90,
+                    duration: const Duration(milliseconds: 420),
+                    curve: Curves.easeOutBack,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 18.0),
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 430),
+                        child: AnimatedBuilder(
+                          animation: _controller,
+                          builder: (context, child) {
+                            return NeoCard(
+                              backgroundColor: const Color(0xFFFFF7D6),
+                              borderColor: NeoColors.rpgText,
+                              borderWidth: 4.0,
+                              shadowOffset: const Offset(7, 7),
+                              padding: EdgeInsets.zero,
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: Stack(
+                                  children: [
+                                    _MissionScanLayer(
+                                      progress: _controller.value,
+                                      color: widget.color,
+                                    ),
+                                    Padding(
+                                      padding: const EdgeInsets.all(18.0),
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.stretch,
+                                        children: [
+                                          _buildTopRow(),
+                                          const SizedBox(height: 14),
+                                          _buildMissionText(),
+                                          const SizedBox(height: 14),
+                                          _buildProgressPanel(),
+                                          const SizedBox(height: 14),
+                                          _buildMissionStats(),
+                                          const SizedBox(height: 16),
+                                          _buildActionRow(),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTopRow() {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        AnimatedBuilder(
+          animation: _controller,
+          builder: (context, child) {
+            final pulse =
+                1.0 + math.sin(_controller.value * math.pi * 2) * 0.05;
+            return Transform.scale(
+              scale: pulse,
+              child: Container(
+                width: 58,
+                height: 58,
+                decoration: BoxDecoration(
+                  color: widget.color,
+                  borderRadius: BorderRadius.circular(12.0),
+                  border: Border.all(color: NeoColors.rpgText, width: 3.0),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: NeoColors.rpgText,
+                      offset: Offset(3, 3),
+                      blurRadius: 0,
+                    ),
+                  ],
+                ),
+                child: Icon(widget.icon, color: Colors.white, size: 30),
+              ),
+            );
+          },
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'AI COMPANION BOOT',
+                style: TextStyle(
+                  fontFamily: 'Space Grotesk',
+                  fontWeight: FontWeight.w900,
+                  fontSize: 10.0,
+                  color: NeoColors.rpgText.withValues(alpha: 0.62),
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                widget.title.toUpperCase(),
+                style: const TextStyle(
+                  fontFamily: 'Space Grotesk',
+                  fontWeight: FontWeight.w900,
+                  fontSize: 20.0,
+                  height: 1.0,
+                  color: NeoColors.rpgText,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMissionText() {
+    return Container(
+      padding: const EdgeInsets.all(12.0),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.86),
+        borderRadius: BorderRadius.circular(10.0),
+        border: Border.all(color: NeoColors.rpgText, width: 2.5),
+      ),
+      child: Text(
+        widget.body,
+        style: const TextStyle(
+          fontFamily: 'Space Grotesk',
+          fontWeight: FontWeight.w900,
+          fontSize: 13.0,
+          height: 1.35,
+          color: NeoColors.rpgText,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildProgressPanel() {
+    final level = widget.isCharging ? widget.batteryLevel : 0;
+    final progress = widget.isCharging ? (level / 100.0).clamp(0.0, 1.0) : 0.18;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Icon(
+              widget.isCharging ? Icons.battery_charging_full : Icons.memory,
+              color: widget.color,
+              size: 17,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              widget.isCharging
+                  ? 'LIVE CHARGE MONITOR: $level%'
+                  : 'LOCAL AI SCAN READY',
+              style: const TextStyle(
+                fontFamily: 'Space Grotesk',
+                fontWeight: FontWeight.w900,
+                fontSize: 10.5,
+                color: NeoColors.rpgText,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 7),
+        Container(
+          height: 16,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: NeoColors.rpgText, width: 2.5),
+          ),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final animatedBoost =
+                  math.sin(_controller.value * math.pi * 2) * 0.03;
+              final width = constraints.maxWidth *
+                  (progress + animatedBoost).clamp(0.08, 1.0);
+              return Align(
+                alignment: Alignment.centerLeft,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 180),
+                  width: width,
+                  decoration: BoxDecoration(
+                    color: widget.color,
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMissionStats() {
+    return Row(
+      children: [
+        Expanded(
+          child: _buildStatChip(
+            icon: Icons.psychology,
+            label: 'AI',
+            value: widget.score == null
+                ? widget.scoreLabel
+                : '${widget.score} ${widget.scoreLabel}',
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: _buildStatChip(
+            icon: Icons.receipt_long,
+            label: 'LOGS',
+            value: '${widget.logCount}',
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildStatChip({
+    required IconData icon,
+    required String label,
+    required String value,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 9.0),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10.0),
+        border: Border.all(color: NeoColors.rpgText, width: 2.5),
+        boxShadow: const [
+          BoxShadow(
+            color: NeoColors.rpgText,
+            offset: Offset(2, 2),
+            blurRadius: 0,
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: widget.color, size: 16),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              '$label: $value'.toUpperCase(),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontFamily: 'Space Grotesk',
+                fontWeight: FontWeight.w900,
+                fontSize: 9.0,
+                color: NeoColors.rpgText,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActionRow() {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            'Offline. Explainable. Based on your real logs.'.toUpperCase(),
+            style: TextStyle(
+              fontFamily: 'Space Grotesk',
+              fontWeight: FontWeight.w900,
+              fontSize: 9.5,
+              height: 1.25,
+              color: NeoColors.rpgText.withValues(alpha: 0.70),
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        NeoButton(
+          backgroundColor: widget.color,
+          borderColor: NeoColors.rpgText,
+          shadowColor: NeoColors.rpgText,
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+          onPressed: widget.onDismiss,
+          child: const Text(
+            'START MISSION',
+            style: TextStyle(
+              fontFamily: 'Space Grotesk',
+              fontWeight: FontWeight.w900,
+              fontSize: 10.5,
+              color: Colors.white,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _MissionScanLayer extends StatelessWidget {
+  final double progress;
+  final Color color;
+
+  const _MissionScanLayer({
+    required this.progress,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned.fill(
+      child: CustomPaint(
+        painter: _MissionScanPainter(
+          progress: progress,
+          color: color,
+        ),
+      ),
+    );
+  }
+}
+
+class _MissionScanPainter extends CustomPainter {
+  final double progress;
+  final Color color;
+
+  const _MissionScanPainter({
+    required this.progress,
+    required this.color,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final linePaint = Paint()
+      ..color = NeoColors.rpgText.withValues(alpha: 0.05)
+      ..strokeWidth = 1;
+    for (double y = 10; y < size.height; y += 12) {
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), linePaint);
+    }
+
+    final scanY = size.height * progress;
+    final scanPaint = Paint()
+      ..color = color.withValues(alpha: 0.14)
+      ..strokeWidth = 26
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(
+      Offset(18, scanY),
+      Offset(size.width - 18, scanY),
+      scanPaint,
+    );
+
+    final dotPaint = Paint()..color = color.withValues(alpha: 0.18);
+    for (var i = 0; i < 8; i++) {
+      final x = ((i * 71) + progress * size.width) % size.width;
+      final y = 16.0 + (i * 31) % math.max(1, size.height - 32);
+      canvas.drawCircle(Offset(x, y), 2.5, dotPaint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _MissionScanPainter oldDelegate) {
+    return oldDelegate.progress != progress || oldDelegate.color != color;
   }
 }
 
@@ -2198,7 +3608,8 @@ class NeoProgressBar extends StatelessWidget {
               duration: const Duration(milliseconds: 600),
               curve: Curves.easeOutCubic,
               builder: (context, animVal, child) {
-                final widthFactor = math.max(0.0, math.min(1.0, animVal / maxValue));
+                final widthFactor =
+                    math.max(0.0, math.min(1.0, animVal / maxValue));
                 return FractionallySizedBox(
                   alignment: Alignment.centerLeft,
                   widthFactor: widthFactor,

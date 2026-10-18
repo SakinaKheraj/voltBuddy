@@ -8,9 +8,14 @@ class BatteryRecord {
   final int? id;
   final String timestamp; // ISO-8601 string
   final int level; // 0-100
-  final String state; // charging, discharging, full, unknown
+  final String
+      state; // charging, full, connectedNotCharging, discharging, unknown
 
-  BatteryRecord({this.id, required this.timestamp, required this.level, required this.state});
+  BatteryRecord(
+      {this.id,
+      required this.timestamp,
+      required this.level,
+      required this.state});
 
   Map<String, dynamic> toMap() => {
         'id': id,
@@ -40,7 +45,7 @@ class BatteryDb {
     final path = p.join(docs.path, 'battery.db');
     _db = await openDatabase(
       path,
-      version: 2,
+      version: 3,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE records (
@@ -58,7 +63,8 @@ class BatteryDb {
             start_time TEXT NOT NULL,
             end_pct INTEGER NOT NULL,
             end_date TEXT NOT NULL,
-            end_time TEXT NOT NULL
+            end_time TEXT NOT NULL,
+            source TEXT DEFAULT 'AC'
           );
         ''');
         await db.execute('''
@@ -73,24 +79,31 @@ class BatteryDb {
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
           await db.execute('''
-            CREATE TABLE charge_sessions (
+            CREATE TABLE IF NOT EXISTS charge_sessions (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               start_pct INTEGER NOT NULL,
               start_date TEXT NOT NULL,
               start_time TEXT NOT NULL,
               end_pct INTEGER NOT NULL,
               end_date TEXT NOT NULL,
-              end_time TEXT NOT NULL
+              end_time TEXT NOT NULL,
+              source TEXT DEFAULT 'AC'
             );
           ''');
           await db.execute('''
-            CREATE TABLE pending_session (
+            CREATE TABLE IF NOT EXISTS pending_session (
               id INTEGER PRIMARY KEY,
               start_pct INTEGER NOT NULL,
               start_date TEXT NOT NULL,
               start_time TEXT NOT NULL
             );
           ''');
+        }
+        if (oldVersion < 3) {
+          try {
+            await db.execute(
+                "ALTER TABLE charge_sessions ADD COLUMN source TEXT DEFAULT 'AC'");
+          } catch (_) {}
         }
       },
     );
@@ -100,47 +113,107 @@ class BatteryDb {
   Future<int> insertRecord(BatteryRecord record) async =>
       await (await _database).insert('records', record.toMap());
 
-  Future<List<BatteryRecord>> getAll() async =>
-      (await _database).query('records', orderBy: 'id ASC').then((rows) => rows.map(BatteryRecord.fromMap).toList());
+  Future<List<BatteryRecord>> getAll() async => (await _database)
+      .query('records', orderBy: 'id ASC')
+      .then((rows) => rows.map(BatteryRecord.fromMap).toList());
 
   Future<BatteryRecord?> getLatestRecord() async {
     final db = await _database;
-    final List<Map<String, dynamic>> maps = await db.query('records', orderBy: 'id DESC', limit: 1);
+    final List<Map<String, dynamic>> maps =
+        await db.query('records', orderBy: 'id DESC', limit: 1);
     if (maps.isEmpty) return null;
     return BatteryRecord.fromMap(maps.first);
   }
 
   Future<int> count() async =>
-      Sqflite.firstIntValue(await (await _database).rawQuery('SELECT COUNT(*) FROM records')) ?? 0;
+      Sqflite.firstIntValue(
+          await (await _database).rawQuery('SELECT COUNT(*) FROM records')) ??
+      0;
 
   // Helpers for finished charge sessions
-  Future<int> insertChargeSession(ChargeSession session) async =>
-      await (await _database).insert('charge_sessions', {
-        'start_pct': session.startPct,
-        'start_date': session.startDate,
-        'start_time': session.startTime,
-        'end_pct': session.endPct,
-        'end_date': session.endDate,
-        'end_time': session.endTime,
-      });
+  Future<int> insertChargeSession(ChargeSession session) async {
+    final db = await _database;
+    // Check if an identical or duplicate session already exists
+    final existing = await db.query(
+      'charge_sessions',
+      where: 'start_date = ? AND start_time = ? AND end_date = ? AND end_time = ?',
+      whereArgs: [
+        session.startDate,
+        session.startTime,
+        session.endDate,
+        session.endTime,
+      ],
+      limit: 1,
+    );
+    if (existing.isNotEmpty) {
+      return (existing.first['id'] as num?)?.toInt() ?? 0;
+    }
+
+    final insertMap = <String, dynamic>{
+      'start_pct': session.startPct,
+      'start_date': session.startDate,
+      'start_time': session.startTime,
+      'end_pct': session.endPct,
+      'end_date': session.endDate,
+      'end_time': session.endTime,
+      'source': session.source,
+    };
+
+    try {
+      return await db.insert('charge_sessions', insertMap);
+    } catch (_) {
+      insertMap.remove('source');
+      return await db.insert('charge_sessions', insertMap);
+    }
+  }
 
   Future<List<ChargeSession>> getAllChargeSessions() async {
-    final List<Map<String, dynamic>> maps = await (await _database).query('charge_sessions', orderBy: 'start_date ASC, start_time ASC');
-    return maps.map((map) => ChargeSession(
-      startPct: map['start_pct'] as int,
-      startDate: map['start_date'] as String,
-      startTime: map['start_time'] as String,
-      endPct: map['end_pct'] as int,
-      endDate: map['end_date'] as String,
-      endTime: map['end_time'] as String,
-    )).toList();
+    final db = await _database;
+
+    // Clean up any duplicates in the database
+    try {
+      await db.execute('''
+        DELETE FROM charge_sessions
+        WHERE id NOT IN (
+          SELECT MIN(id)
+          FROM charge_sessions
+          GROUP BY start_date, start_time, end_date, end_time, start_pct, end_pct
+        )
+      ''');
+    } catch (_) {}
+
+    final List<Map<String, dynamic>> maps = await db.query(
+      'charge_sessions',
+      orderBy: 'start_date ASC, start_time ASC',
+    );
+    return maps
+        .map((map) => ChargeSession(
+              startPct: map['start_pct'] as int,
+              startDate: map['start_date'] as String,
+              startTime: map['start_time'] as String,
+              endPct: map['end_pct'] as int,
+              endDate: map['end_date'] as String,
+              endTime: map['end_time'] as String,
+              source: map['source'] as String? ?? 'AC',
+            ))
+        .toList();
   }
 
   Future<int> clearChargeSessions() async =>
       await (await _database).delete('charge_sessions');
 
+  Future<void> clearAllBatteryData() async {
+    final db = await _database;
+    await db.transaction((txn) async {
+      await txn.delete('charge_sessions');
+      await txn.delete('pending_session');
+      await txn.delete('records');
+    });
+  }
+
   // Helpers for pending sessions
-  Future<void> savePendingSession(int startPct, String startDate, String startTime) async {
+  Future<void> savePendingSession(
+      int startPct, String startDate, String startTime) async {
     final db = await _database;
     await db.delete('pending_session'); // clear previous
     await db.insert('pending_session', {
@@ -153,7 +226,8 @@ class BatteryDb {
 
   Future<Map<String, dynamic>?> getPendingSession() async {
     final db = await _database;
-    final List<Map<String, dynamic>> maps = await db.query('pending_session', where: 'id = 1');
+    final List<Map<String, dynamic>> maps =
+        await db.query('pending_session', where: 'id = 1');
     if (maps.isEmpty) return null;
     return maps.first;
   }
@@ -181,7 +255,7 @@ class BatteryDb {
 
     for (int i = 0; i < allRecords.length; i++) {
       final rec = allRecords[i];
-      final isChargingNow = rec.state == 'charging' || rec.state == 'full';
+      final isChargingNow = _isChargeSessionState(rec.state);
       final prevRec = i > 0 ? allRecords[i - 1] : null;
 
       // Check for offline/gap charging session:
@@ -193,11 +267,15 @@ class BatteryDb {
 
           final session = ChargeSession(
             startPct: prevRec.level,
-            startDate: "${startDt.year}-${startDt.month.toString().padLeft(2, '0')}-${startDt.day.toString().padLeft(2, '0')}",
-            startTime: "${startDt.hour.toString().padLeft(2, '0')}:${startDt.minute.toString().padLeft(2, '0')}:${startDt.second.toString().padLeft(2, '0')}",
+            startDate:
+                "${startDt.year}-${startDt.month.toString().padLeft(2, '0')}-${startDt.day.toString().padLeft(2, '0')}",
+            startTime:
+                "${startDt.hour.toString().padLeft(2, '0')}:${startDt.minute.toString().padLeft(2, '0')}:${startDt.second.toString().padLeft(2, '0')}",
             endPct: rec.level,
-            endDate: "${endDt.year}-${endDt.month.toString().padLeft(2, '0')}-${endDt.day.toString().padLeft(2, '0')}",
-            endTime: "${endDt.hour.toString().padLeft(2, '0')}:${endDt.minute.toString().padLeft(2, '0')}:${endDt.second.toString().padLeft(2, '0')}",
+            endDate:
+                "${endDt.year}-${endDt.month.toString().padLeft(2, '0')}-${endDt.day.toString().padLeft(2, '0')}",
+            endTime:
+                "${endDt.hour.toString().padLeft(2, '0')}:${endDt.minute.toString().padLeft(2, '0')}:${endDt.second.toString().padLeft(2, '0')}",
           );
           detectedSessions.add(session);
         } catch (_) {}
@@ -230,11 +308,15 @@ class BatteryDb {
 
               final session = ChargeSession(
                 startPct: sessionStartLevel,
-                startDate: "${startDt.year}-${startDt.month.toString().padLeft(2, '0')}-${startDt.day.toString().padLeft(2, '0')}",
-                startTime: "${startDt.hour.toString().padLeft(2, '0')}:${startDt.minute.toString().padLeft(2, '0')}:${startDt.second.toString().padLeft(2, '0')}",
+                startDate:
+                    "${startDt.year}-${startDt.month.toString().padLeft(2, '0')}-${startDt.day.toString().padLeft(2, '0')}",
+                startTime:
+                    "${startDt.hour.toString().padLeft(2, '0')}:${startDt.minute.toString().padLeft(2, '0')}:${startDt.second.toString().padLeft(2, '0')}",
                 endPct: endLevel,
-                endDate: "${endDt.year}-${endDt.month.toString().padLeft(2, '0')}-${endDt.day.toString().padLeft(2, '0')}",
-                endTime: "${endDt.hour.toString().padLeft(2, '0')}:${endDt.minute.toString().padLeft(2, '0')}:${endDt.second.toString().padLeft(2, '0')}",
+                endDate:
+                    "${endDt.year}-${endDt.month.toString().padLeft(2, '0')}-${endDt.day.toString().padLeft(2, '0')}",
+                endTime:
+                    "${endDt.hour.toString().padLeft(2, '0')}:${endDt.minute.toString().padLeft(2, '0')}:${endDt.second.toString().padLeft(2, '0')}",
               );
               detectedSessions.add(session);
             } catch (_) {}
@@ -258,5 +340,11 @@ class BatteryDb {
     if (maxProcessedId != -1) {
       await deleteRecordsUpTo(maxProcessedId);
     }
+  }
+
+  bool _isChargeSessionState(String state) {
+    return state == 'charging' ||
+        state == 'full' ||
+        state == 'connectedNotCharging';
   }
 }

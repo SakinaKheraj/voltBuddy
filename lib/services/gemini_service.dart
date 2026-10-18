@@ -7,7 +7,7 @@ class GeminiService {
   factory GeminiService() => _instance;
   GeminiService._internal();
 
-  // API key must not be committed. Set it via the local .env file.
+  // API key must not be committed. Prefer passing it with --dart-define.
   static final _apiKey = dotenv.env['GEMINI_API_KEY'] ?? '';
 
   Future<String> fetchGeminiWithRetry({
@@ -16,8 +16,7 @@ class GeminiService {
     int retries = 5,
   }) async {
     if (_apiKey.isEmpty) {
-      throw Exception(
-          'Gemini API key not configured. Use --dart-define=GEMINI_API_KEY=your_key');
+      return 'Gemini key missing. Run with --dart-define=GEMINI_API_KEY=your_key.';
     }
 
     final url = Uri.parse(

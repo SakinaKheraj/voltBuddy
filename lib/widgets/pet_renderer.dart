@@ -27,6 +27,8 @@ class PetRenderer extends StatefulWidget {
   final bool speechVisible;
   final List<FloatingTextModel> floatingTexts;
   final int glowTrigger;
+  final int feedRewardTrigger;
+  final int warningReactionTrigger;
   final bool isCharging;
 
   const PetRenderer({
@@ -39,6 +41,8 @@ class PetRenderer extends StatefulWidget {
     required this.speechVisible,
     required this.floatingTexts,
     this.glowTrigger = 0,
+    this.feedRewardTrigger = 0,
+    this.warningReactionTrigger = 0,
     this.isCharging = false,
   });
 
@@ -84,6 +88,9 @@ class _PetRendererState extends State<PetRenderer>
   // Visual Guideline: Active state loop pulse (2s)
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
+
+  late AnimationController _feedController;
+  late AnimationController _warningController;
 
   @override
   void initState() {
@@ -162,8 +169,14 @@ class _PetRendererState extends State<PetRenderer>
       duration: const Duration(milliseconds: 500),
     );
     _transitionScale = TweenSequence<double>([
-      TweenSequenceItem(tween: Tween<double>(begin: 1.0, end: 1.25).chain(CurveTween(curve: Curves.easeOut)), weight: 30),
-      TweenSequenceItem(tween: Tween<double>(begin: 1.25, end: 1.0).chain(CurveTween(curve: Curves.elasticOut)), weight: 70),
+      TweenSequenceItem(
+          tween: Tween<double>(begin: 1.0, end: 1.25)
+              .chain(CurveTween(curve: Curves.easeOut)),
+          weight: 30),
+      TweenSequenceItem(
+          tween: Tween<double>(begin: 1.25, end: 1.0)
+              .chain(CurveTween(curve: Curves.elasticOut)),
+          weight: 70),
     ]).animate(_transitionController);
 
     // Species change scale and glow sequence
@@ -172,15 +185,28 @@ class _PetRendererState extends State<PetRenderer>
       duration: const Duration(milliseconds: 700),
     );
     _speciesChangeScale = TweenSequence<double>([
-      TweenSequenceItem(tween: Tween<double>(begin: 1.0, end: 1.18).chain(CurveTween(curve: Curves.easeOut)), weight: 20),
-      TweenSequenceItem(tween: Tween<double>(begin: 1.08, end: 1.08), weight: 40),
-      TweenSequenceItem(tween: Tween<double>(begin: 1.18, end: 1.0).chain(CurveTween(curve: Curves.easeIn)), weight: 40),
+      TweenSequenceItem(
+          tween: Tween<double>(begin: 1.0, end: 1.18)
+              .chain(CurveTween(curve: Curves.easeOut)),
+          weight: 20),
+      TweenSequenceItem(
+          tween: Tween<double>(begin: 1.08, end: 1.08), weight: 40),
+      TweenSequenceItem(
+          tween: Tween<double>(begin: 1.18, end: 1.0)
+              .chain(CurveTween(curve: Curves.easeIn)),
+          weight: 40),
     ]).animate(_speciesChangeController);
 
     _speciesChangeGlow = TweenSequence<double>([
-      TweenSequenceItem(tween: Tween<double>(begin: 0.0, end: 1.0).chain(CurveTween(curve: Curves.easeOut)), weight: 20),
+      TweenSequenceItem(
+          tween: Tween<double>(begin: 0.0, end: 1.0)
+              .chain(CurveTween(curve: Curves.easeOut)),
+          weight: 20),
       TweenSequenceItem(tween: Tween<double>(begin: 1.0, end: 1.0), weight: 40),
-      TweenSequenceItem(tween: Tween<double>(begin: 1.0, end: 0.0).chain(CurveTween(curve: Curves.easeIn)), weight: 40),
+      TweenSequenceItem(
+          tween: Tween<double>(begin: 1.0, end: 0.0)
+              .chain(CurveTween(curve: Curves.easeIn)),
+          weight: 40),
     ]).animate(_speciesChangeController);
 
     // Entrance Animation setup (300ms scale 0.8 -> 1.0, fade-in)
@@ -206,6 +232,16 @@ class _PetRendererState extends State<PetRenderer>
     );
     _pulseController.repeat(reverse: true);
 
+    _feedController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1150),
+    );
+
+    _warningController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 850),
+    );
+
     _updateStateControllers();
   }
 
@@ -222,6 +258,17 @@ class _PetRendererState extends State<PetRenderer>
     } else if (otherChanged) {
       _transitionController.forward(from: 0.0);
     }
+
+    if (oldWidget.feedRewardTrigger != widget.feedRewardTrigger) {
+      _feedController.forward(from: 0.0);
+      _speciesChangeController.forward(from: 0.0);
+    }
+
+    if (oldWidget.warningReactionTrigger != widget.warningReactionTrigger) {
+      _warningController.forward(from: 0.0);
+      _transitionController.forward(from: 0.0);
+    }
+
     _updateStateControllers();
   }
 
@@ -246,6 +293,8 @@ class _PetRendererState extends State<PetRenderer>
     _speciesChangeController.dispose();
     _entranceController.dispose();
     _pulseController.dispose();
+    _feedController.dispose();
+    _warningController.dispose();
     _blinkTimer?.cancel();
     _wiggleTimer?.cancel();
     super.dispose();
@@ -261,6 +310,127 @@ class _PetRendererState extends State<PetRenderer>
       return Colors.grey.shade400;
     }
     return const Color.fromARGB(255, 255, 204, 0);
+  }
+
+  Widget _buildFeedingReward() {
+    return AnimatedBuilder(
+      animation: _feedController,
+      builder: (context, child) {
+        final raw = _feedController.value;
+        final active = _feedController.isAnimating || raw > 0;
+        final t = Curves.easeInOutCubic.transform(raw);
+        final opacity = !active
+            ? 0.0
+            : raw < 0.10
+                ? raw / 0.10
+                : raw > 0.84
+                    ? (1.0 - raw) / 0.16
+                    : 1.0;
+        final left = 0.0 + (150.0 * t);
+        final top = 6.0 + (120.0 * t) - (math.sin(raw * math.pi) * 62.0);
+
+        return Positioned(
+          left: left,
+          top: top,
+          child: IgnorePointer(
+            child: Opacity(
+              opacity: opacity.clamp(0.0, 1.0),
+              child: Transform.rotate(
+                angle: raw * math.pi * 2.0,
+                child: Transform.scale(
+                  scale: 0.95 + math.sin(raw * math.pi) * 0.55,
+                  child: Container(
+                    width: 72,
+                    height: 72,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFD1FAE5),
+                      borderRadius: BorderRadius.circular(18.0),
+                      border: Border.all(color: NeoColors.rpgText, width: 4.0),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: NeoColors.rpgText,
+                          offset: Offset(5, 5),
+                          blurRadius: 0,
+                        ),
+                      ],
+                    ),
+                    child: const Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.restaurant,
+                          color: NeoColors.rpgAccent,
+                          size: 34,
+                        ),
+                        Text(
+                          'FEED',
+                          style: TextStyle(
+                            fontFamily: 'Space Grotesk',
+                            fontWeight: FontWeight.w900,
+                            fontSize: 9,
+                            color: NeoColors.rpgAccent,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildWarningBurst() {
+    return AnimatedBuilder(
+      animation: _warningController,
+      builder: (context, child) {
+        final raw = _warningController.value;
+        final active = _warningController.isAnimating || raw > 0;
+        final scale = 0.72 + Curves.elasticOut.transform(raw) * 0.82;
+        final opacity = !active
+            ? 0.0
+            : raw > 0.72
+                ? (1.0 - raw) / 0.28
+                : 1.0;
+
+        return Positioned(
+          top: 10 - (math.sin(raw * math.pi) * 22.0),
+          right: 28,
+          child: IgnorePointer(
+            child: Opacity(
+              opacity: opacity.clamp(0.0, 1.0),
+              child: Transform.scale(
+                scale: scale,
+                child: Container(
+                  width: 72,
+                  height: 72,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFEE2E2),
+                    borderRadius: BorderRadius.circular(18.0),
+                    border: Border.all(color: NeoColors.rpgBad, width: 4.0),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: NeoColors.rpgText,
+                        offset: Offset(5, 5),
+                        blurRadius: 0,
+                      ),
+                    ],
+                  ),
+                  child: const Icon(
+                    Icons.warning_amber,
+                    color: NeoColors.rpgBad,
+                    size: 42,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
   }
 
   @override
@@ -283,7 +453,9 @@ class _PetRendererState extends State<PetRenderer>
                   child: Opacity(
                     opacity: 0.15 - (_floatAnimation.value * 0.005),
                     child: Transform.scale(
-                      scale: 1.0 + (_floatAnimation.value * 0.02) + (_breathAnimation.value * 0.04),
+                      scale: 1.0 +
+                          (_floatAnimation.value * 0.02) +
+                          (_breathAnimation.value * 0.04),
                       child: Container(
                         width: 100,
                         height: 14,
@@ -295,7 +467,7 @@ class _PetRendererState extends State<PetRenderer>
                     ),
                   ),
                 ),
-    
+
                 // PULSING AURA
                 AnimatedBuilder(
                   animation: _auraController,
@@ -321,13 +493,13 @@ class _PetRendererState extends State<PetRenderer>
                     );
                   },
                 ),
-    
+
                 // EVOLUTION SUPER GLOW
                 AnimatedBuilder(
                   animation: _speciesChangeController,
                   builder: (context, child) {
                     final glow = _speciesChangeGlow.value;
-    
+
                     return IgnorePointer(
                       child: Center(
                         child: AnimatedContainer(
@@ -340,14 +512,16 @@ class _PetRendererState extends State<PetRenderer>
                             boxShadow: [
                               // MAIN PET GLOW
                               BoxShadow(
-                                color: const Color(0xFFFFF176).withValues(alpha: glow * 0.45),
+                                color: const Color(0xFFFFF176)
+                                    .withValues(alpha: glow * 0.45),
                                 blurRadius: 42,
                                 spreadRadius: 5,
                               ),
-    
+
                               // SOFT OUTER BLOOM
                               BoxShadow(
-                                color: NeoColors.rpgGold.withValues(alpha: glow * 0.18),
+                                color: NeoColors.rpgGold
+                                    .withValues(alpha: glow * 0.18),
                                 blurRadius: 65,
                                 spreadRadius: 1,
                               ),
@@ -358,18 +532,7 @@ class _PetRendererState extends State<PetRenderer>
                     );
                   },
                 ),
-    
-                // FLOATING TEXT OVERLAYS
-                ...widget.floatingTexts.map((ft) {
-                  return FloatingOverlayText(
-                    key: ft.id,
-                    text: ft.text,
-                    color: ft.color,
-                    xOffset: ft.xOffset,
-                    yOffset: ft.yOffset,
-                  );
-                }),
-    
+
                 // MAIN PET STAGE (FLOAT + SHAKE + TRANSITION BURST + PUMP ACTIVE STATE PULSE)
                 AnimatedBuilder(
                   animation: Listenable.merge([
@@ -388,7 +551,8 @@ class _PetRendererState extends State<PetRenderer>
                         switchInCurve: Curves.easeInOut,
                         switchOutCurve: Curves.easeInOut,
                         child: DrawnPet(
-                          key: ValueKey('${widget.species}_${widget.rankIndex}_${widget.batch}_${widget.healthState}'),
+                          key: ValueKey(
+                              '${widget.species}_${widget.rankIndex}_${widget.batch}_${widget.healthState}'),
                           species: widget.species,
                           rankIndex: widget.rankIndex,
                           batch: widget.batch,
@@ -402,14 +566,23 @@ class _PetRendererState extends State<PetRenderer>
                     ),
                   ),
                   builder: (context, cachedChild) {
-                    double yVal = widget.healthState == 'tired' ? 5.0 : _floatAnimation.value;
+                    double yVal = widget.healthState == 'tired'
+                        ? 5.0
+                        : _floatAnimation.value;
                     double xVal = 0.0;
                     if (widget.healthState == 'sick') {
-                      xVal = _shakeAnimation.value * (math.sin(DateTime.now().millisecondsSinceEpoch / 25) > 0 ? 1 : -1);
+                      xVal = _shakeAnimation.value *
+                          (math.sin(DateTime.now().millisecondsSinceEpoch /
+                                      25) >
+                                  0
+                              ? 1
+                              : -1);
                     }
-    
-                    final double totalScale = _transitionScale.value * _speciesChangeScale.value * _pulseAnimation.value;
-    
+
+                    final double totalScale = _transitionScale.value *
+                        _speciesChangeScale.value *
+                        _pulseAnimation.value;
+
                     return Transform.scale(
                       scale: totalScale,
                       child: Transform.translate(
@@ -419,6 +592,23 @@ class _PetRendererState extends State<PetRenderer>
                     );
                   },
                 ),
+
+                // GOOD CHARGE FOOD REWARD
+                _buildFeedingReward(),
+
+                // RISK / UNPLUG WARNING BURST
+                _buildWarningBurst(),
+
+                // FLOATING TEXT OVERLAYS
+                ...widget.floatingTexts.map((ft) {
+                  return FloatingOverlayText(
+                    key: ft.id,
+                    text: ft.text,
+                    color: ft.color,
+                    xOffset: ft.xOffset,
+                    yOffset: ft.yOffset,
+                  );
+                }),
 
                 // SPEECH BUBBLE (Overlaid on top of the pet)
                 if (widget.speechVisible)
@@ -443,7 +633,8 @@ class _PetRendererState extends State<PetRenderer>
                         borderWidth: 3.0,
                         borderRadius: 16.0,
                         shadowOffset: const Offset(3, 3),
-                        padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 8.0),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14.0, vertical: 8.0),
                         width: 220,
                         child: Center(
                           child: Text(
@@ -506,18 +697,50 @@ class DrawnPet extends StatelessWidget {
     if (healthState == 'tired') {
       // Grayscale(40%) + Brightness(90%)
       return const ColorFilter.matrix(<double>[
-        0.6165, 0.2575, 0.0260, 0, 0,
-        0.0765, 0.7975, 0.0260, 0, 0,
-        0.0765, 0.2575, 0.5660, 0, 0,
-        0,      0,      0,      1, 0,
+        0.6165,
+        0.2575,
+        0.0260,
+        0,
+        0,
+        0.0765,
+        0.7975,
+        0.0260,
+        0,
+        0,
+        0.0765,
+        0.2575,
+        0.5660,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
       ]);
     } else if (healthState == 'sick') {
       // Grayscale(70%) + Sepia(50%) + Hue-Rotate(-50deg) + Saturate(3)
       return const ColorFilter.matrix(<double>[
-        0.52, 0.41, 0.07, 0, 0,
-        0.33, 0.72, 0.15, 0, 0,
-        0.15, 0.25, 0.55, 0, 0,
-        0,    0,    0,    1, 0,
+        0.52,
+        0.41,
+        0.07,
+        0,
+        0,
+        0.33,
+        0.72,
+        0.15,
+        0,
+        0,
+        0.15,
+        0.25,
+        0.55,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
       ]);
     }
     return const ColorFilter.mode(Colors.transparent, BlendMode.dst);
@@ -526,7 +749,8 @@ class DrawnPet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: Listenable.merge([wiggleAnimation, blinkAnimation, breathAnimation]),
+      animation:
+          Listenable.merge([wiggleAnimation, blinkAnimation, breathAnimation]),
       builder: (context, child) {
         return ColorFiltered(
           colorFilter: _getColorFilter(),
@@ -539,10 +763,10 @@ class DrawnPet extends StatelessWidget {
               children: [
                 // EARS (Absolute positioned behind face)
                 _buildEars(),
-    
+
                 // FACE BASE (The main orange circle)
                 _buildFaceBase(),
-    
+
                 // EQUIPMENT LAYERS
                 _buildEquipment(),
               ],
@@ -554,7 +778,8 @@ class DrawnPet extends StatelessWidget {
   }
 
   Widget _buildEars() {
-    final double wiggleVal = wiggleAnimation.value * 50; // rotation wiggle in degrees
+    final double wiggleVal =
+        wiggleAnimation.value * 50; // rotation wiggle in degrees
 
     switch (species) {
       case 'dog':
@@ -703,7 +928,8 @@ class DrawnPet extends StatelessWidget {
 
   Widget _buildFaceBase() {
     final mood = _getMood();
-    final double eyeHeight = (mood == 'sleepy' ? 3.0 : 16.0) * blinkAnimation.value;
+    final double eyeHeight =
+        (mood == 'sleepy' ? 3.0 : 16.0) * blinkAnimation.value;
 
     Widget mouth;
     if (mood == 'overheated') {
@@ -924,7 +1150,8 @@ class DrawnPet extends StatelessWidget {
             height: 48,
             decoration: BoxDecoration(
               color: const Color(0xFF8B5A2B),
-              borderRadius: const BorderRadius.vertical(bottom: Radius.circular(999)),
+              borderRadius:
+                  const BorderRadius.vertical(bottom: Radius.circular(999)),
               border: Border.all(color: NeoColors.rpgText, width: 4.0),
             ),
           ),
@@ -943,7 +1170,8 @@ class DrawnPet extends StatelessWidget {
                 height: 40,
                 decoration: BoxDecoration(
                   color: NeoColors.rpgMuted,
-                  borderRadius: const BorderRadius.vertical(top: Radius.circular(999)),
+                  borderRadius:
+                      const BorderRadius.vertical(top: Radius.circular(999)),
                   border: Border.all(color: NeoColors.rpgText, width: 4.0),
                 ),
               ),
@@ -957,7 +1185,8 @@ class DrawnPet extends StatelessWidget {
                 height: 64,
                 decoration: BoxDecoration(
                   color: NeoColors.rpgSilver,
-                  borderRadius: const BorderRadius.vertical(top: Radius.circular(999)),
+                  borderRadius:
+                      const BorderRadius.vertical(top: Radius.circular(999)),
                   border: Border.all(color: NeoColors.rpgText, width: 4.0),
                 ),
               ),
@@ -971,7 +1200,8 @@ class DrawnPet extends StatelessWidget {
                 height: 48,
                 decoration: BoxDecoration(
                   color: NeoColors.rpgText,
-                  borderRadius: const BorderRadius.vertical(bottom: Radius.circular(999)),
+                  borderRadius:
+                      const BorderRadius.vertical(bottom: Radius.circular(999)),
                   border: Border.all(color: NeoColors.rpgText, width: 4.0),
                 ),
                 child: Row(
@@ -1004,7 +1234,8 @@ class DrawnPet extends StatelessWidget {
                 height: 96,
                 decoration: BoxDecoration(
                   color: NeoColors.rpgSurface,
-                  borderRadius: const BorderRadius.horizontal(left: Radius.circular(999)),
+                  borderRadius:
+                      const BorderRadius.horizontal(left: Radius.circular(999)),
                   border: Border.all(color: NeoColors.rpgText, width: 4.0),
                 ),
               ),
@@ -1018,7 +1249,8 @@ class DrawnPet extends StatelessWidget {
                 height: 96,
                 decoration: BoxDecoration(
                   color: NeoColors.rpgSurface,
-                  borderRadius: const BorderRadius.horizontal(right: Radius.circular(999)),
+                  borderRadius: const BorderRadius.horizontal(
+                      right: Radius.circular(999)),
                   border: Border.all(color: NeoColors.rpgText, width: 4.0),
                 ),
               ),
@@ -1060,7 +1292,8 @@ class DrawnPet extends StatelessWidget {
                 height: 32,
                 decoration: BoxDecoration(
                   color: Colors.white,
-                  borderRadius: const BorderRadius.vertical(top: Radius.circular(999)),
+                  borderRadius:
+                      const BorderRadius.vertical(top: Radius.circular(999)),
                   border: Border.all(color: NeoColors.rpgText, width: 4.0),
                 ),
               ),
@@ -1074,7 +1307,8 @@ class DrawnPet extends StatelessWidget {
                 height: 60,
                 decoration: BoxDecoration(
                   color: NeoColors.rpgGold,
-                  borderRadius: const BorderRadius.vertical(top: Radius.circular(16.0)),
+                  borderRadius:
+                      const BorderRadius.vertical(top: Radius.circular(16.0)),
                   border: Border.all(color: NeoColors.rpgText, width: 4.0),
                 ),
               ),
@@ -1088,7 +1322,8 @@ class DrawnPet extends StatelessWidget {
                 height: 112,
                 decoration: BoxDecoration(
                   color: NeoColors.rpgDuke,
-                  borderRadius: const BorderRadius.horizontal(left: Radius.circular(999)),
+                  borderRadius:
+                      const BorderRadius.horizontal(left: Radius.circular(999)),
                   border: Border.all(color: NeoColors.rpgText, width: 4.0),
                 ),
               ),
@@ -1102,7 +1337,8 @@ class DrawnPet extends StatelessWidget {
                 height: 112,
                 decoration: BoxDecoration(
                   color: NeoColors.rpgDuke,
-                  borderRadius: const BorderRadius.horizontal(right: Radius.circular(999)),
+                  borderRadius: const BorderRadius.horizontal(
+                      right: Radius.circular(999)),
                   border: Border.all(color: NeoColors.rpgText, width: 4.0),
                 ),
               ),
@@ -1116,7 +1352,8 @@ class DrawnPet extends StatelessWidget {
                 height: 50,
                 decoration: BoxDecoration(
                   color: NeoColors.rpgSilver,
-                  borderRadius: const BorderRadius.vertical(bottom: Radius.circular(999)),
+                  borderRadius:
+                      const BorderRadius.vertical(bottom: Radius.circular(999)),
                   border: Border.all(color: NeoColors.rpgText, width: 4.0),
                 ),
                 child: Center(
@@ -1152,8 +1389,10 @@ class DrawnPet extends StatelessWidget {
                       height: 48,
                       decoration: BoxDecoration(
                         color: NeoColors.rpgGold,
-                        borderRadius: const BorderRadius.vertical(top: Radius.circular(6)),
-                        border: Border.all(color: NeoColors.rpgText, width: 4.0),
+                        borderRadius: const BorderRadius.vertical(
+                            top: Radius.circular(6)),
+                        border:
+                            Border.all(color: NeoColors.rpgText, width: 4.0),
                       ),
                     ),
                   ),
@@ -1162,7 +1401,8 @@ class DrawnPet extends StatelessWidget {
                     height: 64,
                     decoration: BoxDecoration(
                       color: NeoColors.rpgGold,
-                      borderRadius: const BorderRadius.vertical(top: Radius.circular(6)),
+                      borderRadius:
+                          const BorderRadius.vertical(top: Radius.circular(6)),
                       border: Border.all(color: NeoColors.rpgText, width: 4.0),
                     ),
                   ),
@@ -1173,8 +1413,10 @@ class DrawnPet extends StatelessWidget {
                       height: 48,
                       decoration: BoxDecoration(
                         color: NeoColors.rpgGold,
-                        borderRadius: const BorderRadius.vertical(top: Radius.circular(6)),
-                        border: Border.all(color: NeoColors.rpgText, width: 4.0),
+                        borderRadius: const BorderRadius.vertical(
+                            top: Radius.circular(6)),
+                        border:
+                            Border.all(color: NeoColors.rpgText, width: 4.0),
                       ),
                     ),
                   ),
@@ -1191,7 +1433,8 @@ class DrawnPet extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 8.0),
                 decoration: BoxDecoration(
                   color: NeoColors.rpgRoyal,
-                  borderRadius: const BorderRadius.vertical(bottom: Radius.circular(999)),
+                  borderRadius:
+                      const BorderRadius.vertical(bottom: Radius.circular(999)),
                   border: Border.all(color: NeoColors.rpgText, width: 4.0),
                 ),
                 child: Row(
@@ -1204,7 +1447,8 @@ class DrawnPet extends StatelessWidget {
                       decoration: const BoxDecoration(
                         color: Colors.white,
                         border: Border.symmetric(
-                          vertical: BorderSide(color: NeoColors.rpgText, width: 4.0),
+                          vertical:
+                              BorderSide(color: NeoColors.rpgText, width: 4.0),
                         ),
                       ),
                     ),
@@ -1279,27 +1523,36 @@ class _FloatingOverlayTextState extends State<FloatingOverlayText>
     return AnimatedBuilder(
       animation: _controller,
       builder: (context, child) {
-        return Positioned(
-          top: 108 + widget.yOffset + _yAnim.value, // adjusted from 48 to 108 to account for 280 vs 160 base height
-          left: 140 + widget.xOffset, // adjusted from 80 to 140 to center in 280 width
-          child: Opacity(
-            opacity: _opacityAnim.value,
-            child: Transform.scale(
-              scale: _scaleAnim.value,
-              child: Text(
-                widget.text,
-                style: TextStyle(
-                  fontFamily: 'Space Grotesk',
-                  fontWeight: FontWeight.w900,
-                  fontSize: 24.0,
-                  color: widget.color,
-                  shadows: const [
-                    Shadow(
-                      color: NeoColors.rpgText,
-                      offset: Offset(2, 2),
-                      blurRadius: 0,
+        return Positioned.fill(
+          child: IgnorePointer(
+            child: Transform.translate(
+              offset: Offset(
+                widget.xOffset,
+                widget.yOffset + _yAnim.value,
+              ),
+              child: Center(
+                child: Opacity(
+                  opacity: _opacityAnim.value,
+                  child: Transform.scale(
+                    scale: _scaleAnim.value,
+                    child: Text(
+                      widget.text,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontFamily: 'Space Grotesk',
+                        fontWeight: FontWeight.w900,
+                        fontSize: 22.0,
+                        color: widget.color,
+                        shadows: const [
+                          Shadow(
+                            color: NeoColors.rpgText,
+                            offset: Offset(2, 2),
+                            blurRadius: 0,
+                          ),
+                        ],
+                      ),
                     ),
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -1309,4 +1562,3 @@ class _FloatingOverlayTextState extends State<FloatingOverlayText>
     );
   }
 }
-
