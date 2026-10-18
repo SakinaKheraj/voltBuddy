@@ -1,4 +1,4 @@
-package com.voltbuddy.app
+package com.example.voltbuddy
 
 import android.content.BroadcastReceiver
 import android.content.Context

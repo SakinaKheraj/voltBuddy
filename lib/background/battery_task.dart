@@ -25,7 +25,7 @@ void callbackDispatcher() {
 /// Uses native MethodChannel instead of battery_plus to avoid
 /// plugin initialization issues in background isolates.
 Future<void> collectBatteryData() async {
-  const channel = MethodChannel('com.voltbuddy.app/battery');
+  const channel = MethodChannel('com.example.voltbuddy/battery');
 
   try {
     final raw = await channel.invokeMapMethod<String, dynamic>(

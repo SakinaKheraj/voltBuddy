@@ -30,7 +30,7 @@ class BatterySnapshot {
 
 class BatterySnapshotService {
   static const MethodChannel _channel =
-      MethodChannel('com.voltbuddy.app/battery');
+      MethodChannel('com.example.voltbuddy/battery');
 
   static final Battery _fallbackBattery = Battery();
 
