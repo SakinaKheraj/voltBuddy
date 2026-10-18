@@ -1,4 +1,4 @@
-package com.voltbuddy.app
+package com.example.voltbuddy
 
 import android.Manifest
 import android.content.Context
@@ -21,7 +21,7 @@ import org.json.JSONArray
 import java.io.File
 
 class MainActivity : FlutterActivity() {
-    private val batteryChannel = "com.voltbuddy.app/battery"
+    private val batteryChannel = "com.example.voltbuddy/battery"
 
     companion object {
         private const val TAG = "VoltBuddy.MainActivity"
