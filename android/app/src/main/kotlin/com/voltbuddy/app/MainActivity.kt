@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
+import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
@@ -25,6 +26,30 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val TAG = "VoltBuddy.MainActivity"
         private const val NOTIFICATION_PERMISSION_CODE = 101
+        const val EXTRA_LAUNCH_SOURCE = "vb_launch_source"
+    }
+
+    // Set when the activity is opened from the VoltBuddy notification; read
+    // (and cleared) by Dart for interaction tracking.
+    @Volatile
+    private var pendingLaunchSource: String? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        if (savedInstanceState == null) captureLaunchSource(intent)
+        super.onCreate(savedInstanceState)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        captureLaunchSource(intent)
+    }
+
+    private fun captureLaunchSource(intent: Intent?) {
+        val source = intent?.getStringExtra(EXTRA_LAUNCH_SOURCE) ?: return
+        val fromRecents = (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0
+        if (!fromRecents) pendingLaunchSource = source
+        intent.removeExtra(EXTRA_LAUNCH_SOURCE)
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -35,6 +60,11 @@ class MainActivity : FlutterActivity() {
                 when (call.method) {
                     "getBatterySnapshot" -> result.success(getBatterySnapshot())
                     "getAndClearNativeRecords" -> result.success(getAndClearNativeRecords())
+                    "getAndClearNativeEvents" -> result.success(getAndClearNativeEvents())
+                    "getLaunchSource" -> {
+                        result.success(pendingLaunchSource)
+                        pendingLaunchSource = null
+                    }
                     "getDeviceInfo" -> result.success(getDeviceInfo())
                     "startBatteryService" -> {
                         startVoltBatteryService()
@@ -134,6 +164,33 @@ class MainActivity : FlutterActivity() {
 
         Log.d(TAG, "getAndClearNativeRecords returning ${records.size} records to Dart")
         return records
+    }
+
+    /**
+     * Reads and clears interaction-study events written by [VoltBatteryService].
+     */
+    private fun getAndClearNativeEvents(): List<Map<String, Any?>> {
+        val file = File(filesDir, VoltBatteryService.EVENTS_FILE)
+        if (!file.exists()) return emptyList()
+
+        val events = mutableListOf<Map<String, Any?>>()
+        synchronized(VoltBatteryService.EVENTS_FILE) {
+            try {
+                val array = JSONArray(file.readText())
+                for (i in 0 until array.length()) {
+                    val obj = array.getJSONObject(i)
+                    val map = mutableMapOf<String, Any?>()
+                    for (key in obj.keys()) map[key] = obj.opt(key)
+                    events.add(map)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error reading native events file: ${e.message}")
+            }
+            try {
+                file.delete()
+            } catch (_: Exception) {}
+        }
+        return events
     }
 
     private fun getBatterySnapshot(): Map<String, Any?> {

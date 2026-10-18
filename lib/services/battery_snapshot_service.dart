@@ -177,6 +177,36 @@ class BatterySnapshotService {
     }
   }
 
+  /// Returns `notification` if the app was just opened by tapping the
+  /// VoltBuddy notification, otherwise null. Reading clears it.
+  static Future<String?> getLaunchSource() async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return null;
+    try {
+      return await _channel.invokeMethod<String>('getLaunchSource');
+    } catch (e) {
+      debugPrint('VoltBuddy: Failed to read launch source: $e');
+      return null;
+    }
+  }
+
+  /// Returns and clears interaction-study events recorded by the native
+  /// service while the app was closed (plug/unplug, 85% notification).
+  static Future<List<Map<String, Object?>>> getAndClearNativeEvents() async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return const [];
+    try {
+      final result =
+          await _channel.invokeMethod<List<dynamic>>('getAndClearNativeEvents');
+      if (result == null) return const [];
+      return [
+        for (final entry in result)
+          if (entry is Map) Map<String, Object?>.from(entry),
+      ];
+    } catch (e) {
+      debugPrint('VoltBuddy: Failed to read native events: $e');
+      return const [];
+    }
+  }
+
   /// Returns device info (manufacturer, model, brand, Android version, etc.)
   /// from the native Android side via MethodChannel.
   static Future<Map<String, dynamic>?> getDeviceInfo() async {

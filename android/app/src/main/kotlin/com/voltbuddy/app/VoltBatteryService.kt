@@ -40,6 +40,9 @@ class VoltBatteryService : Service() {
         const val CHANNEL_ID = "voltbuddy_battery_monitor"
         const val NOTIFICATION_ID = 1001
         const val RECORDS_FILE = "battery_bg_records.json"
+        // Phase 2 interaction-study events, read by MainActivity.getAndClearNativeEvents
+        const val EVENTS_FILE = "voltbuddy_native_events.json"
+        private const val PREF_NUDGE_LOGGED = "unplug_nudge_logged"
         private const val PREFS_NAME = "voltbuddy_battery_prefs"
         private const val PREF_IS_CHARGING = "is_charging"
         private const val PREF_START_PCT = "start_pct"
@@ -118,15 +121,21 @@ class VoltBatteryService : Service() {
     }
 
     private fun buildNotification(title: String, content: String): Notification {
-        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
-        val pendingIntent = if (launchIntent != null) {
-            PendingIntent.getActivity(
-                this,
-                0,
-                launchIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
-            )
-        } else null
+        // Explicit intent (rather than the launcher intent) so a tap on the
+        // notification is delivered to a running activity via onNewIntent and
+        // can be told apart from a launcher open.
+        val launchIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra(MainActivity.EXTRA_LAUNCH_SOURCE, "notification")
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            launchIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+        )
 
         val iconRes = applicationInfo.icon.takeIf { it != 0 } ?: android.R.drawable.ic_lock_idle_charging
 
@@ -244,7 +253,13 @@ class VoltBatteryService : Service() {
         // 1. PLUG-IN DETECTED: transition from false -> true (or ACTION_POWER_CONNECTED)
         if ((isChargingNow && !wasCharging) || action == Intent.ACTION_POWER_CONNECTED) {
             Log.d(TAG, "⚡ CHARGING STARTED at $nowTime, Level: $level% ($pluggedSource)")
+            if (!wasCharging) {
+                appendStudyEvent("native_power_connected", now, level, state, true) {
+                    put("plugged_source", pluggedSource)
+                }
+            }
             prefs.edit().apply {
+                putBoolean(PREF_NUDGE_LOGGED, false)
                 putBoolean(PREF_IS_CHARGING, true)
                 putInt(PREF_START_PCT, level)
                 putString(PREF_START_DATE, nowDate)
@@ -264,6 +279,13 @@ class VoltBatteryService : Service() {
             val startSource = prefs.getString(PREF_PLUGGED_SOURCE, "AC") ?: "AC"
 
             Log.d(TAG, "🔌 CHARGING ENDED at $nowTime: $startPct% -> $level% ($startDate $startTime -> $nowDate $nowTime)")
+            if (wasCharging) {
+                appendStudyEvent("native_power_disconnected", now, level, state, false) {
+                    put("start_pct", startPct)
+                    put("start_ts", prefs.getString(PREF_START_TIMESTAMP, null) ?: JSONObject.NULL)
+                    put("nudge_posted", prefs.getBoolean(PREF_NUDGE_LOGGED, false))
+                }
+            }
 
             // Save completed charge session record if valid
             if (level > startPct || (level == startPct && level >= 80)) {
@@ -278,6 +300,7 @@ class VoltBatteryService : Service() {
                 remove(PREF_START_TIME)
                 remove(PREF_START_TIMESTAMP)
                 remove(PREF_PLUGGED_SOURCE)
+                putBoolean(PREF_NUDGE_LOGGED, false)
                 apply()
             }
 
@@ -291,6 +314,12 @@ class VoltBatteryService : Service() {
                 val startPct = prefs.getInt(PREF_START_PCT, level)
                 val gained = (level - startPct).coerceAtLeast(0)
                 val statusText = if (level >= 85) {
+                    if (!prefs.getBoolean(PREF_NUDGE_LOGGED, false)) {
+                        prefs.edit().putBoolean(PREF_NUDGE_LOGGED, true).apply()
+                        appendStudyEvent("native_unplug_nudge_posted", now, level, state, true) {
+                            put("start_pct", startPct)
+                        }
+                    }
                     "85% Target Reached! Unplug soon ⚡"
                 } else {
                     "Charging ($level%) • +$gained% gained"
@@ -342,6 +371,42 @@ class VoltBatteryService : Service() {
             put("source", source)
         }
         appendRecordToFile(session)
+    }
+
+    /**
+     * Records a Phase 2 interaction-study event. Kept in a separate file from
+     * [RECORDS_FILE] so the existing charge-session import is unaffected.
+     */
+    private fun appendStudyEvent(
+        event: String,
+        at: Date,
+        level: Int,
+        state: String,
+        isCharging: Boolean,
+        extra: JSONObject.() -> Unit = {}
+    ) {
+        try {
+            val record = JSONObject().apply {
+                put("event", event)
+                put("ts_ms", at.time)
+                put("level", level)
+                put("state", state)
+                put("is_charging", isCharging)
+                extra()
+            }
+            val file = File(filesDir, EVENTS_FILE)
+            synchronized(EVENTS_FILE) {
+                val array = if (file.exists()) {
+                    try { JSONArray(file.readText()) } catch (e: Exception) { JSONArray() }
+                } else {
+                    JSONArray()
+                }
+                array.put(record)
+                file.writeText(array.toString())
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to append study event $event: ${e.message}")
+        }
     }
 
     private fun appendRecordToFile(record: JSONObject) {

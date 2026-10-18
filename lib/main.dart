@@ -1,11 +1,18 @@
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import 'package:visibility_detector/visibility_detector.dart';
+
+import 'analytics/event_logger.dart';
+import 'analytics/tap_recorder.dart';
+import 'analytics/tracking_config.dart';
 import 'models/simulation_models.dart';
 
+import 'services/app_prefs.dart';
 import 'services/battery_snapshot_service.dart';
 import 'services/charging_ai_service.dart';
 import 'services/localization_service.dart';
@@ -48,6 +55,20 @@ void main() async {
 
   final loc = LocalizationService();
   await loc.init();
+
+  await AppPrefs.instance.load();
+  final savedPersona = AppPrefs.instance.persona;
+  if (savedPersona != null) loc.locale = savedPersona;
+
+  try {
+    await EventLogger.instance.init(
+      launchSourceReader: BatterySnapshotService.getLaunchSource,
+      nativeEventsReader: BatterySnapshotService.getAndClearNativeEvents,
+    );
+  } catch (e) {
+    debugPrint("Failed to initialize interaction tracking: $e");
+  }
+
   runApp(const MyApp());
 }
 
@@ -65,6 +86,9 @@ class MyApp extends StatelessWidget {
           Theme.of(context).textTheme,
         ),
       ),
+      navigatorObservers: [TrackingNavigatorObserver.instance],
+      builder: (context, child) =>
+          InteractionTapRecorder(child: child ?? const SizedBox.shrink()),
       home: const MainScreen(),
     );
   }
@@ -87,7 +111,7 @@ class _MainScreenState extends State<MainScreen>
   int _hp = 100;
   int _xp = 0;
   int _currentRankIndex = 0;
-  String _currentSpecies = "cat"; // cat, dog, rabbit
+  String _currentSpecies = _restoredSpecies(); // cat, dog, rabbit
   String _currentTab =
       "tab-stats"; // tab-stats, tab-tips, tab-data, tab-sandbox
 
@@ -149,6 +173,43 @@ class _MainScreenState extends State<MainScreen>
   final ScrollController _timelineScrollController = ScrollController();
   final ScrollController _mainScrollController = ScrollController();
 
+  // --- Phase 2 interaction tracking state ---
+  final EventLogger _tracker = EventLogger.instance;
+  bool _batteryKnown = false;
+  bool _appInForeground = true;
+  // Screen regions used to attribute raw taps (checked in this order).
+  final Map<String, GlobalKey> _zoneKeys = {
+    for (final zone in const [
+      'header',
+      'tab_bar',
+      'pet_stage',
+      'pet_details',
+      'progress_bars',
+      'tab_content',
+    ])
+      zone: GlobalKey(debugLabel: 'zone_$zone'),
+  };
+  int? _tabEnteredMono;
+  double _tabMaxScrollPx = 0;
+  int? _contentSeenStartMono;
+  String? _contentSeenTab;
+  double _contentSeenMaxPx = 0;
+  double _lastContentVisiblePx = 0;
+  static const double _contentSeenMinPx = 100;
+  int? _scrollStartMono;
+  double? _scrollStartPx;
+  bool _scrollUserDriven = false;
+  int? _missionShownMono;
+  String? _missionShownTitle;
+  bool _heatmapPopoverOpen = false;
+  int? _heatmapOpenedMono;
+  String? _heatmapOpenDate;
+
+  static String _restoredSpecies() {
+    final saved = AppPrefs.instance.species;
+    return const ['cat', 'dog', 'rabbit'].contains(saved) ? saved! : 'cat';
+  }
+
   final List<Map<String, dynamic>> _ranks = [
     {"id": 1, "name": "Recruit", "batch": 1},
     {"id": 2, "name": "Squire", "batch": 1},
@@ -174,12 +235,31 @@ class _MainScreenState extends State<MainScreen>
       CurvedAnimation(parent: _screenShakeController, curve: Curves.linear),
     );
 
+    _tracker.contextProvider = _trackingContext;
+    _tracker.tapContextResolver = _resolveTapZone;
+    _tracker.addLifecycleHooks(
+      beforeBackground: _onTrackingBackground,
+      afterForeground: _onTrackingForeground,
+    );
+    _mainScrollController.addListener(_onMainScroll);
+    _enterTab('launch');
+
     // Load real-time battery stats
     _loadRealStats();
-    _missionBriefTimer = Timer(const Duration(milliseconds: 650), () {
+    _missionBriefTimer = Timer(const Duration(milliseconds: 650), () async {
+      if (!mounted) return;
+      if (AppPrefs.instance.participantId == null) {
+        await _promptParticipantId(firstTime: true);
+      }
       if (mounted) {
         setState(() {
           _missionBriefVisible = true;
+        });
+        _missionShownMono = _tracker.monoNow;
+        _missionShownTitle = _missionTitle();
+        _tracker.log('mission_brief_shown', target: _missionShownTitle, props: {
+          'score': _aiReport.totalSessions == 0 ? null : _aiReport.score,
+          'log_count': _aiReport.totalSessions,
         });
       }
     });
@@ -195,6 +275,12 @@ class _MainScreenState extends State<MainScreen>
 
   @override
   void dispose() {
+    _tracker.removeLifecycleHooks(
+      beforeBackground: _onTrackingBackground,
+      afterForeground: _onTrackingForeground,
+    );
+    _tracker.contextProvider = null;
+    _tracker.tapContextResolver = null;
     WidgetsBinding.instance.removeObserver(this);
     _batterySubscription?.cancel();
     _stopForegroundTimer();
@@ -209,9 +295,12 @@ class _MainScreenState extends State<MainScreen>
   // --- ACTIONS ---
 
   void _triggerBadgeClick() {
+    _tracker.log('rank_badge_tapped',
+        userAction: true, props: {'count': _badgeClickCount + 1});
     setState(() {
       _badgeClickCount++;
       if (_badgeClickCount >= 5) {
+        if (!_sandboxUnlocked) _tracker.log('sandbox_unlocked');
         _sandboxUnlocked = true;
         _spawnFloatingText(
           _loc.translate('alert_sandbox', defaultVal: 'Sandbox Unlocked!'),
@@ -224,6 +313,11 @@ class _MainScreenState extends State<MainScreen>
 
   void _changeLanguage(String? lang) {
     if (lang != null) {
+      _tracker.log('persona_selected', target: lang, userAction: true, props: {
+        'from': _currentLanguage,
+        'changed': lang != _currentLanguage,
+      });
+      AppPrefs.instance.persona = lang;
       setState(() {
         _currentLanguage = lang;
         _loc.locale = lang;
@@ -309,8 +403,18 @@ class _MainScreenState extends State<MainScreen>
 
     _showSpeechBubble(_loc.translate("thinking", defaultVal: "Thinking..."));
 
+    _tracker.log('talk_tapped', userAction: true);
+    final talkStartMono = _tracker.monoNow;
     final response = await _gemini.fetchGeminiWithRetry(
         prompt: prompt, systemPrompt: sysPrompt);
+    _tracker.log('talk_response', props: {
+      'outcome': response.startsWith('Gemini key missing')
+          ? 'key_missing'
+          : response == 'Me oracle broken. Try later.'
+              ? 'error'
+              : 'ok',
+      'latency_ms': _tracker.monoNow - talkStartMono,
+    });
 
     // Clean up quotes
     final cleanResponse = response.replaceAll('"', '').trim();
@@ -319,6 +423,11 @@ class _MainScreenState extends State<MainScreen>
 
   Future<void> _askPetAdvice() async {
     final report = _aiReport;
+    _tracker.log('advice_generated', userAction: true, props: {
+      'score': report.score,
+      'has_enough_data': report.hasEnoughData,
+      'total_sessions': report.totalSessions,
+    });
     setState(() {
       _adviceContent = _buildAiAdviceCard(report);
       if (report.score >= 85 && report.hasEnoughData) {
@@ -329,6 +438,188 @@ class _MainScreenState extends State<MainScreen>
   }
 
   Widget? _adviceContent;
+
+  // --- INTERACTION TRACKING HELPERS ---
+
+  Map<String, Object?> _trackingContext() => {
+        'tab': _currentTab,
+        'battery_pct': _batteryKnown ? _currentBatteryLevel : null,
+        'battery_state': _batteryKnown ? _currentBatteryState : null,
+        'is_charging': _batteryKnown ? _isCharging : null,
+        'persona': _currentLanguage,
+        'species': _currentSpecies,
+        'hp': _hp,
+        'xp': _xp,
+        'rank_index': _currentRankIndex,
+      };
+
+  double get _scrollPx =>
+      _mainScrollController.hasClients ? _mainScrollController.offset : 0.0;
+
+  static double _round1(double v) => (v * 10).roundToDouble() / 10;
+
+  Map<String, Object?> _resolveTapZone(Offset globalPosition) {
+    final base = <String, Object?>{'scroll_px': _round1(_scrollPx)};
+    final popup = TrackingNavigatorObserver.instance.topPopupKind;
+    if (popup != null) return {...base, 'zone': popup};
+    if (_heatmapPopoverOpen) return {...base, 'zone': 'heatmap_popover'};
+    if (_missionBriefVisible) return {...base, 'zone': 'mission_brief'};
+
+    for (final entry in _zoneKeys.entries) {
+      final box = entry.value.currentContext?.findRenderObject();
+      if (box is! RenderBox || !box.attached || !box.hasSize) continue;
+      final local = box.globalToLocal(globalPosition);
+      if ((Offset.zero & box.size).contains(local)) {
+        return {
+          ...base,
+          'zone': entry.key,
+          if (entry.key == 'tab_content') 'content_y': _round1(local.dy),
+          if (entry.key == 'tab_content') 'content_h': _round1(box.size.height),
+        };
+      }
+    }
+    return {...base, 'zone': 'outside'};
+  }
+
+  void _enterTab(String reason) {
+    _tabEnteredMono = _tracker.monoNow;
+    _tabMaxScrollPx = _scrollPx;
+    _tracker.log('tab_entered', target: _currentTab, props: {'reason': reason});
+  }
+
+  void _leaveTab(String reason) {
+    final entered = _tabEnteredMono;
+    if (entered == null) return;
+    _closeContentSeen();
+    _tracker.log('tab_left', target: _currentTab, props: {
+      'reason': reason,
+      'duration_ms': _tracker.monoNow - entered,
+      'max_scroll_px': _round1(_tabMaxScrollPx),
+      'scroll_extent_px': _mainScrollController.hasClients
+          ? _round1(_mainScrollController.position.maxScrollExtent)
+          : null,
+    });
+    _tabEnteredMono = null;
+  }
+
+  void _onMainScroll() {
+    if (_scrollPx > _tabMaxScrollPx) _tabMaxScrollPx = _scrollPx;
+  }
+
+  bool _onMainScrollNotification(ScrollNotification n) {
+    if (n.depth != 0) return false;
+    if (n is ScrollStartNotification) {
+      _scrollStartMono ??= _tracker.monoNow;
+      _scrollStartPx ??= n.metrics.pixels;
+    } else if (n is UserScrollNotification &&
+        n.direction != ScrollDirection.idle) {
+      _scrollUserDriven = true;
+    } else if (n is ScrollEndNotification && _scrollStartPx != null) {
+      final from = _scrollStartPx!;
+      final to = n.metrics.pixels;
+      if (_scrollUserDriven && (to - from).abs() >= 8) {
+        _tracker.log('scrolled', userAction: true, tapResponse: false, props: {
+          'from_px': _round1(from),
+          'to_px': _round1(to),
+          'extent_px': _round1(n.metrics.maxScrollExtent),
+          'viewport_px': _round1(n.metrics.viewportDimension),
+          'duration_ms':
+              _tracker.monoNow - (_scrollStartMono ?? _tracker.monoNow),
+        });
+      }
+      _scrollStartMono = null;
+      _scrollStartPx = null;
+      _scrollUserDriven = false;
+    }
+    return false;
+  }
+
+  Key get _tabContentKey => ValueKey('vb-tab-content-$_currentTab');
+
+  void _onTabContentVisibility(VisibilityInfo info) {
+    if (!mounted || info.key != _tabContentKey || !_appInForeground) return;
+    final px = info.visibleBounds.height;
+    _lastContentVisiblePx = px;
+    if (px >= _contentSeenMinPx) {
+      _contentSeenStartMono ??= _tracker.monoNow;
+      _contentSeenTab = _currentTab;
+      if (px > _contentSeenMaxPx) _contentSeenMaxPx = px;
+    } else {
+      _closeContentSeen();
+    }
+  }
+
+  void _closeContentSeen() {
+    final start = _contentSeenStartMono;
+    if (start == null) return;
+    _tracker.log('tab_content_seen', target: _contentSeenTab, props: {
+      'duration_ms': _tracker.monoNow - start,
+      'max_visible_px': _round1(_contentSeenMaxPx),
+    });
+    _contentSeenStartMono = null;
+    _contentSeenMaxPx = 0;
+  }
+
+  void _onTrackingBackground() {
+    _leaveTab('background');
+    _appInForeground = false;
+  }
+
+  void _onTrackingForeground() {
+    _appInForeground = true;
+    _enterTab('resume');
+    if (_lastContentVisiblePx >= _contentSeenMinPx) {
+      _contentSeenStartMono = _tracker.monoNow;
+      _contentSeenTab = _currentTab;
+      _contentSeenMaxPx = _lastContentVisiblePx;
+    }
+  }
+
+  void _selectTab(String tabId) {
+    final from = _currentTab;
+    _tracker.log('tab_selected', target: tabId, userAction: true, props: {
+      'from': from,
+      'changed': from != tabId,
+    });
+    if (from == tabId) return;
+    _leaveTab('switch');
+    setState(() {
+      _currentTab = tabId;
+    });
+    _lastContentVisiblePx = 0;
+    _enterTab('switch');
+  }
+
+  static String _fileSafe(String s) =>
+      s.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
+
+  Future<void> _promptParticipantId({required bool firstTime}) async {
+    _tracker
+        .log('participant_id_prompt_shown', props: {'first_time': firstTime});
+    final previous = AppPrefs.instance.participantId;
+    final saved = await showDialog<String>(
+      context: context,
+      barrierDismissible: !firstTime,
+      builder: (dialogContext) => PopScope(
+        canPop: !firstTime,
+        child: _ParticipantIdDialog(
+          initialValue: previous ?? '',
+          firstTime: firstTime,
+        ),
+      ),
+    );
+
+    if (saved != null) {
+      AppPrefs.instance.participantId = saved;
+      _tracker.log('participant_id_saved', userAction: true, props: {
+        'first_time': firstTime,
+        'changed': saved != previous,
+      });
+      if (mounted) setState(() {});
+    } else {
+      _tracker.log('participant_id_prompt_closed', userAction: true);
+    }
+  }
 
   // --- SIMULATION LOGIC ---
 
@@ -441,6 +732,10 @@ class _MainScreenState extends State<MainScreen>
       }
 
       if (isNowCharging && currentLevel >= 85 && !_chargeNudgeShown) {
+        _tracker.log('unplug_nudge_shown', props: {
+          'level': currentLevel,
+          'severity': currentLevel >= 95 ? 'high' : 'target',
+        });
         _chargeNudgeShown = true;
         _warningReactionTrigger++;
         final targetText = currentLevel >= 95
@@ -451,6 +746,16 @@ class _MainScreenState extends State<MainScreen>
       } else if (!isNowCharging || currentLevel < 80) {
         _chargeNudgeShown = false;
       }
+
+      if (isNowCharging != _isCharging || !_batteryKnown) {
+        _tracker.log('charge_state_observed', props: {
+          'charging': isNowCharging,
+          'level': currentLevel,
+          'state': snapshot.state,
+          'first_reading': !_batteryKnown,
+        });
+      }
+      _batteryKnown = true;
 
       if (isNowCharging != _isCharging) {
         if (isNowCharging) {
@@ -818,6 +1123,17 @@ class _MainScreenState extends State<MainScreen>
   }
 
   void _triggerSessionReward(ChargeSession session) {
+    _tracker.log('session_feedback_shown', props: {
+      'kind': session.isPerfectCharge
+          ? 'reward'
+          : (session.isOvercharge || session.isCriticalStart)
+              ? 'risk'
+              : 'logged',
+      'start_pct': session.startPct,
+      'end_pct': session.endPct,
+      'start': '${session.startDate} ${session.startTime}',
+      'end': '${session.endDate} ${session.endTime}',
+    });
     if (session.isPerfectCharge) {
       setState(() {
         _feedRewardTrigger++;
@@ -846,15 +1162,20 @@ class _MainScreenState extends State<MainScreen>
     final rect =
         box != null ? (box.localToGlobal(Offset.zero) & box.size) : null;
 
+    _tracker.log('export_tapped', userAction: true);
     try {
       final sessions = await BatteryDb().getAllChargeSessions();
-      if (sessions.isEmpty) {
+      if (sessions.isEmpty && !_tracker.enabled) {
         _spawnFloatingText("No logs to share!", NeoColors.rpgMuted);
         return;
       }
 
       // Fetch device info from native Android
       final deviceInfo = await BatterySnapshotService.getDeviceInfo();
+      final participantId = AppPrefs.instance.participantId ?? 'UNKNOWN';
+      final fileTag = _fileSafe(participantId);
+      final tempDir = await getTemporaryDirectory();
+      final shareFiles = <XFile>[];
 
       final csvBuffer = StringBuffer();
 
@@ -862,6 +1183,8 @@ class _MainScreenState extends State<MainScreen>
       csvBuffer.writeln("# ========================================================");
       csvBuffer.writeln("# VoltBuddy Longitudinal Behavioral Research Logs");
       csvBuffer.writeln("# Export Timestamp : ${DateTime.now().toIso8601String()}");
+      csvBuffer.writeln("# Participant ID   : $participantId");
+      csvBuffer.writeln("# App Version      : $kAppVersion");
       if (deviceInfo != null) {
         final manufacturer = deviceInfo['manufacturer'] ?? 'Unknown';
         final model = deviceInfo['model'] ?? 'Unknown';
@@ -900,25 +1223,59 @@ class _MainScreenState extends State<MainScreen>
         sessionNum++;
       }
 
-      final tempDir = await getTemporaryDirectory();
-      final file = File('${tempDir.path}/charge_logs.csv');
-      await file.writeAsString(csvBuffer.toString());
+      if (sessions.isNotEmpty) {
+        final file = File('${tempDir.path}/charge_logs_$fileTag.csv');
+        await file.writeAsString(csvBuffer.toString());
+        shareFiles.add(XFile(file.path));
+      }
 
-      final xFile = XFile(file.path);
+      int eventCount = 0;
+      if (_tracker.enabled) {
+        final eventsCsv = await _tracker.buildCsv(
+          participantId: participantId,
+          installId: AppPrefs.instance.installId,
+          deviceInfo: deviceInfo,
+        );
+        eventCount = '\n'.allMatches(eventsCsv).length;
+        final eventsFile =
+            File('${tempDir.path}/interaction_logs_$fileTag.csv');
+        await eventsFile.writeAsString(eventsCsv);
+        shareFiles.add(XFile(eventsFile.path));
+      }
 
-      await SharePlus.instance.share(
+      if (kEventViewerEnabled) {
+        // Test builds only: keep a copy readable via `adb pull`.
+        final testDir = await getExternalStorageDirectory();
+        if (testDir != null) {
+          for (final f in shareFiles) {
+            await File(f.path)
+                .copy('${testDir.path}/${f.path.split('/').last}');
+          }
+        }
+      }
+
+      final result = await SharePlus.instance.share(
         ShareParams(
-          files: [xFile],
-          text: 'VoltBuddy Charging Logs CSV',
+          files: shareFiles,
+          text: 'VoltBuddy Charging & Interaction Logs CSV',
           sharePositionOrigin: rect,
         ),
       );
+      _tracker.log('export_result', props: {
+        'status': result.status.name,
+        'files': shareFiles.length,
+        'charge_sessions': sessions.length,
+        'csv_lines': eventCount,
+      });
     } catch (e) {
+      _tracker.log('export_result', props: {'status': 'error'});
       _spawnFloatingText("Share failed: $e", NeoColors.rpgBad);
     }
   }
 
   Future<void> _showClearConfirmationDialog(BuildContext context) async {
+    _tracker.log('clear_dialog_opened', userAction: true);
+    final openedMono = _tracker.monoNow;
     final confirmed = await showDialog<bool>(
       context: context,
       barrierDismissible: true,
@@ -1023,6 +1380,14 @@ class _MainScreenState extends State<MainScreen>
       },
     );
 
+    _tracker.log('clear_dialog_closed', userAction: true, props: {
+      'result': confirmed == true
+          ? 'confirmed'
+          : confirmed == false
+              ? 'cancelled'
+              : 'dismissed',
+      'open_ms': _tracker.monoNow - openedMono,
+    });
     if (confirmed == true) {
       await BatteryDb().clearAllBatteryData();
       await _loadRealStats();
@@ -1033,6 +1398,7 @@ class _MainScreenState extends State<MainScreen>
   // --- MANUAL DEV INTERACTIONS ---
 
   void _manualGoodCharge() {
+    _tracker.log('sandbox_action', target: 'good_charge', userAction: true);
     final oldRank = _currentRankIndex;
     final oldXp = _xp;
     setState(() {
@@ -1065,6 +1431,7 @@ class _MainScreenState extends State<MainScreen>
   }
 
   void _manualOvercharge() {
+    _tracker.log('sandbox_action', target: 'overcharge', userAction: true);
     setState(() {
       _hp = math.max(0, _hp - 20);
       _simFinalHp = _hp;
@@ -1075,6 +1442,8 @@ class _MainScreenState extends State<MainScreen>
   }
 
   void _forceState(String state) {
+    _tracker.log('sandbox_action',
+        target: 'force_state', userAction: true, props: {'value': state});
     setState(() {
       if (state == 'thriving') {
         _hp = 100;
@@ -1144,53 +1513,76 @@ class _MainScreenState extends State<MainScreen>
                 child: Column(
                   children: [
                     // Header section
-                    _buildHeader(),
+                    KeyedSubtree(
+                      key: _zoneKeys['header'],
+                      child: _buildHeader(),
+                    ),
 
                     // Scrollable body containing Pet Stage and Tabs content
                     Expanded(
-                      child: SingleChildScrollView(
-                        controller: _mainScrollController,
-                        physics: const ClampingScrollPhysics(),
-                        child: Column(
-                          children: [
-                            const SizedBox(height: 80),
-                            // Pet Arena Stage
-                            PetRenderer(
-                              species: _currentSpecies,
-                              rankIndex: _currentRankIndex,
-                              batch: batch,
-                              healthState: state,
-                              speechText: _speechText,
-                              speechVisible: _speechVisible,
-                              floatingTexts: _floatingTexts,
-                              glowTrigger: _petGlowTrigger,
-                              feedRewardTrigger: _feedRewardTrigger,
-                              warningReactionTrigger: _warningReactionTrigger,
-                              isCharging: _isCharging,
-                            ),
-                            const SizedBox(height: 12),
+                      child: NotificationListener<ScrollNotification>(
+                        onNotification: _onMainScrollNotification,
+                        child: SingleChildScrollView(
+                          controller: _mainScrollController,
+                          physics: const ClampingScrollPhysics(),
+                          child: Column(
+                            children: [
+                              const SizedBox(height: 80),
+                              // Pet Arena Stage
+                              KeyedSubtree(
+                                key: _zoneKeys['pet_stage'],
+                                child: PetRenderer(
+                                  species: _currentSpecies,
+                                  rankIndex: _currentRankIndex,
+                                  batch: batch,
+                                  healthState: state,
+                                  speechText: _speechText,
+                                  speechVisible: _speechVisible,
+                                  floatingTexts: _floatingTexts,
+                                  glowTrigger: _petGlowTrigger,
+                                  feedRewardTrigger: _feedRewardTrigger,
+                                  warningReactionTrigger:
+                                      _warningReactionTrigger,
+                                  isCharging: _isCharging,
+                                ),
+                              ),
+                              const SizedBox(height: 12),
 
-                            // Asset details labels
-                            _buildPetDetails(statusText, statusColor, petName),
+                              // Asset details labels
+                              KeyedSubtree(
+                                key: _zoneKeys['pet_details'],
+                                child: _buildPetDetails(
+                                    statusText, statusColor, petName),
+                              ),
 
-                            // Progress health and exp bars
-                            Padding(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 24.0, vertical: 12.0),
-                              child: _buildProgressBars(),
-                            ),
-                            const SizedBox(height: 8),
+                              // Progress health and exp bars
+                              Padding(
+                                key: _zoneKeys['progress_bars'],
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 24.0, vertical: 12.0),
+                                child: _buildProgressBars(),
+                              ),
+                              const SizedBox(height: 8),
 
-                            // Neo-brutalist navigation tabs bar
-                            _buildTabBar(),
+                              // Neo-brutalist navigation tabs bar
+                              KeyedSubtree(
+                                key: _zoneKeys['tab_bar'],
+                                child: _buildTabBar(),
+                              ),
 
-                            // Active Tab container block
-                            Container(
-                              color: Colors.white,
-                              padding: const EdgeInsets.all(16.0),
-                              child: _buildActiveTabContent(),
-                            ),
-                          ],
+                              // Active Tab container block
+                              VisibilityDetector(
+                                key: _tabContentKey,
+                                onVisibilityChanged: _onTabContentVisibility,
+                                child: Container(
+                                  key: _zoneKeys['tab_content'],
+                                  color: Colors.white,
+                                  padding: const EdgeInsets.all(16.0),
+                                  child: _buildActiveTabContent(),
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     ),
@@ -1275,6 +1667,14 @@ class _MainScreenState extends State<MainScreen>
       isCharging: _isCharging,
       batteryLevel: _currentBatteryLevel,
       onDismiss: () {
+        _tracker.log('mission_brief_dismissed',
+            target: _missionShownTitle,
+            userAction: true,
+            props: {
+              'visible_ms': _missionShownMono == null
+                  ? null
+                  : _tracker.monoNow - _missionShownMono!,
+            });
         setState(() {
           _missionBriefVisible = false;
         });
@@ -1360,6 +1760,8 @@ class _MainScreenState extends State<MainScreen>
                             color: NeoColors.rpgText,
                           ),
                           onChanged: _changeLanguage,
+                          onTap: () => _tracker.log('persona_menu_opened',
+                              userAction: true),
                           items: const [
                             DropdownMenuItem(
                                 value: "regular", child: Text("REGULAR")),
@@ -1649,7 +2051,13 @@ class _MainScreenState extends State<MainScreen>
   Widget _buildSpeciesButton(String species, String label) {
     return GestureDetector(
       onTap: () {
+        _tracker
+            .log('species_selected', target: species, userAction: true, props: {
+          'from': _currentSpecies,
+          'changed': _currentSpecies != species,
+        });
         if (_currentSpecies != species) {
+          AppPrefs.instance.species = species;
           setState(() {
             _currentSpecies = species;
             _petGlowTrigger++;
@@ -1750,11 +2158,7 @@ class _MainScreenState extends State<MainScreen>
     final active = _currentTab == tabId;
     return Expanded(
       child: GestureDetector(
-        onTap: () {
-          setState(() {
-            _currentTab = tabId;
-          });
-        },
+        onTap: () => _selectTab(tabId),
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 12.0),
           decoration: BoxDecoration(
@@ -1810,6 +2214,16 @@ class _MainScreenState extends State<MainScreen>
           dailyData: _dailyData,
           globalMetrics: _globalMetrics,
           onDaySelected: (dayMetrics, petQuote) {
+            _heatmapPopoverOpen = true;
+            _heatmapOpenedMono = _tracker.monoNow;
+            _heatmapOpenDate = dayMetrics.date;
+            _tracker.log('heatmap_day_opened',
+                target: dayMetrics.date,
+                userAction: true,
+                props: {
+                  'sessions': dayMetrics.sessions,
+                  'avg_score': dayMetrics.averageScore,
+                });
             setState(() {
               if (dayMetrics.hpAtEndOfDay != null)
                 _hp = dayMetrics.hpAtEndOfDay!;
@@ -1827,6 +2241,17 @@ class _MainScreenState extends State<MainScreen>
             }
           },
           onDayDismissed: () {
+            if (_heatmapPopoverOpen) {
+              _tracker.log('heatmap_day_closed',
+                  target: _heatmapOpenDate,
+                  userAction: true,
+                  props: {
+                    'open_ms': _tracker.monoNow -
+                        (_heatmapOpenedMono ?? _tracker.monoNow),
+                  });
+            }
+            _heatmapPopoverOpen = false;
+            if (!mounted) return;
             setState(() {
               _hp = _simFinalHp;
               _xp = _simFinalXp;
@@ -2653,7 +3078,7 @@ class _MainScreenState extends State<MainScreen>
                 ),
               ],
             ),
-            if (_timelineCards.isNotEmpty)
+            if (_timelineCards.isNotEmpty || _tracker.enabled)
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -2680,26 +3105,48 @@ class _MainScreenState extends State<MainScreen>
                       ],
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  NeoButton(
-                    backgroundColor: NeoColors.rpgMuted,
-                    borderColor: NeoColors.rpgText,
-                    shadowColor: NeoColors.rpgText,
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10.0, vertical: 6.0),
-                    onPressed: () => _showClearConfirmationDialog(context),
-                    child: const Text(
-                      "CLEAR ALL",
-                      style: TextStyle(
-                          fontFamily: 'Space Grotesk',
-                          fontWeight: FontWeight.w900,
-                          color: Colors.white,
-                          fontSize: 10.0),
+                  if (_timelineCards.isNotEmpty) ...[
+                    const SizedBox(width: 8),
+                    NeoButton(
+                      backgroundColor: NeoColors.rpgMuted,
+                      borderColor: NeoColors.rpgText,
+                      shadowColor: NeoColors.rpgText,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10.0, vertical: 6.0),
+                      onPressed: () => _showClearConfirmationDialog(context),
+                      child: const Text(
+                        "CLEAR ALL",
+                        style: TextStyle(
+                            fontFamily: 'Space Grotesk',
+                            fontWeight: FontWeight.w900,
+                            color: Colors.white,
+                            fontSize: 10.0),
+                      ),
                     ),
-                  ),
+                  ],
                 ],
               ),
           ],
+        ),
+        const SizedBox(height: 10),
+        GestureDetector(
+          onTap: () => _promptParticipantId(firstTime: false),
+          child: Row(
+            children: [
+              const Icon(Icons.badge, color: NeoColors.rpgText, size: 14.0),
+              const SizedBox(width: 6),
+              Text(
+                "PARTICIPANT ID: ${AppPrefs.instance.participantId ?? 'NOT SET'}",
+                style: const TextStyle(
+                    fontFamily: 'Space Grotesk',
+                    fontWeight: FontWeight.bold,
+                    fontSize: 10.5,
+                    color: NeoColors.rpgText),
+              ),
+              const SizedBox(width: 4),
+              const Icon(Icons.edit, color: NeoColors.rpgText, size: 12.0),
+            ],
+          ),
         ),
         if (_timelineCards.isEmpty) ...[
           const SizedBox(height: 32),
@@ -2758,6 +3205,11 @@ class _MainScreenState extends State<MainScreen>
                 padding: const EdgeInsets.only(bottom: 10.0),
                 child: GestureDetector(
                   onTap: () {
+                    _tracker.log('log_card_toggled', userAction: true, props: {
+                      'index': idx,
+                      'expanded': !isExpanded,
+                      'session_date': card['date'],
+                    });
                     setState(() {
                       if (isExpanded) {
                         _expandedCardIndices.remove(idx);
@@ -2965,6 +3417,10 @@ class _MainScreenState extends State<MainScreen>
                 fontSize: 13.0),
             onChanged: (val) {
               if (val != null) {
+                _tracker.log('sandbox_action',
+                    target: 'set_rank',
+                    userAction: true,
+                    props: {'value': val});
                 setState(() {
                   _currentRankIndex = val;
                   _simFinalRankIndex = val;
@@ -3053,7 +3509,55 @@ class _MainScreenState extends State<MainScreen>
             _buildForceStateBtn('sick', "SICK"),
           ],
         ),
+        if (kEventViewerEnabled && _tracker.enabled) ...[
+          const SizedBox(height: 16),
+          _buildEventViewer(),
+        ],
       ],
+    );
+  }
+
+  /// Test-build-only list of the most recent interaction events.
+  Widget _buildEventViewer() {
+    return StatefulBuilder(
+      builder: (context, setViewerState) =>
+          FutureBuilder<List<Map<String, Object?>>>(
+        future: _tracker.latest(40),
+        builder: (context, snap) {
+          final rows = snap.data ?? const [];
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      "EVENT LOG (LATEST ${rows.length})",
+                      style: const TextStyle(
+                          fontFamily: 'Space Grotesk',
+                          fontWeight: FontWeight.bold,
+                          fontSize: 10.0,
+                          color: NeoColors.rpgText),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.refresh, size: 18),
+                    onPressed: () => setViewerState(() {}),
+                  ),
+                ],
+              ),
+              for (final r in rows)
+                Text(
+                  "${r['session_seq'] ?? 'nat'} ${r['event']}"
+                  "${r['target'] != null ? ' [${r['target']}]' : ''}"
+                  " ${r['props'] ?? ''}",
+                  style:
+                      const TextStyle(fontFamily: 'monospace', fontSize: 9.0),
+                ),
+            ],
+          );
+        },
+      ),
     );
   }
 
@@ -3630,6 +4134,158 @@ class NeoProgressBar extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// One-time Student ID prompt for the Phase 2 study. Owns its text
+/// controller so it is disposed only after the dialog's exit animation.
+class _ParticipantIdDialog extends StatefulWidget {
+  final String initialValue;
+  final bool firstTime;
+
+  const _ParticipantIdDialog({
+    required this.initialValue,
+    required this.firstTime,
+  });
+
+  @override
+  State<_ParticipantIdDialog> createState() => _ParticipantIdDialogState();
+}
+
+class _ParticipantIdDialogState extends State<_ParticipantIdDialog> {
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.initialValue);
+  String? _error;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final value = _controller.text.trim();
+    if (!RegExp(r'^[A-Za-z0-9_-]{4,20}$').hasMatch(value)) {
+      setState(
+          () => _error = 'Enter your Student ID (letters and numbers only).');
+      return;
+    }
+    Navigator.of(context).pop(value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding:
+          const EdgeInsets.symmetric(horizontal: 24.0, vertical: 24.0),
+      child: NeoCard(
+        backgroundColor: NeoColors.rpgBg,
+        borderColor: NeoColors.rpgText,
+        borderWidth: 4.0,
+        shadowColor: NeoColors.rpgText,
+        shadowOffset: const Offset(6, 6),
+        padding: const EdgeInsets.all(20.0),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Row(
+              children: [
+                Icon(Icons.badge, color: NeoColors.primary, size: 26.0),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'STUDY PARTICIPANT ID',
+                    style: TextStyle(
+                      fontFamily: 'Space Grotesk',
+                      fontWeight: FontWeight.w900,
+                      fontSize: 16.0,
+                      color: NeoColors.rpgText,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              'Enter your Student ID once. It is added to your exported files so the research team can match them to you.',
+              style: TextStyle(
+                fontFamily: 'Space Grotesk',
+                fontWeight: FontWeight.bold,
+                fontSize: 12.0,
+                color: NeoColors.rpgText,
+              ),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _controller,
+              autofocus: true,
+              textInputAction: TextInputAction.done,
+              onSubmitted: (_) => _submit(),
+              style: const TextStyle(
+                fontFamily: 'Space Grotesk',
+                fontWeight: FontWeight.w900,
+                fontSize: 16.0,
+                color: NeoColors.rpgText,
+              ),
+              decoration: InputDecoration(
+                hintText: 'e.g. 202301173',
+                errorText: _error,
+                filled: true,
+                fillColor: Colors.white,
+                border: const OutlineInputBorder(
+                  borderSide: BorderSide(color: NeoColors.rpgText, width: 2.0),
+                ),
+              ),
+            ),
+            const SizedBox(height: 18),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                if (!widget.firstTime) ...[
+                  NeoButton(
+                    backgroundColor: Colors.white,
+                    borderColor: NeoColors.rpgText,
+                    shadowColor: NeoColors.rpgText,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16.0, vertical: 8.0),
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text(
+                      'CANCEL',
+                      style: TextStyle(
+                        fontFamily: 'Space Grotesk',
+                        fontWeight: FontWeight.w900,
+                        fontSize: 11.0,
+                        color: NeoColors.rpgText,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                ],
+                NeoButton(
+                  backgroundColor: NeoColors.primary,
+                  borderColor: NeoColors.rpgText,
+                  shadowColor: NeoColors.rpgText,
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16.0, vertical: 8.0),
+                  onPressed: _submit,
+                  child: const Text(
+                    'SAVE',
+                    style: TextStyle(
+                      fontFamily: 'Space Grotesk',
+                      fontWeight: FontWeight.w900,
+                      fontSize: 11.0,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

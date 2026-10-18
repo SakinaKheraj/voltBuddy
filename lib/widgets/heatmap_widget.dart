@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import '../analytics/event_logger.dart';
 import '../models/simulation_models.dart';
 import '../services/localization_service.dart';
 import 'neo_brutalist.dart';
@@ -601,6 +602,10 @@ class _HeatmapWidgetState extends State<HeatmapWidget> {
     final active = _mode == buttonMode;
     return GestureDetector(
       onTap: () {
+        EventLogger.instance.log('heatmap_mode_selected',
+            target: buttonMode,
+            userAction: true,
+            props: {'from': _mode, 'changed': _mode != buttonMode});
         setState(() {
           _mode = buttonMode;
         });
