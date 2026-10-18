@@ -253,7 +253,7 @@ class _MainScreenState extends State<MainScreen>
       }
       if (mounted) {
         setState(() {
-          _missionBriefVisible = true;
+          _updateObscured(() => _missionBriefVisible = true);
         });
         _missionShownMono = _tracker.monoNow;
         _missionShownTitle = _missionTitle();
@@ -540,13 +540,39 @@ class _MainScreenState extends State<MainScreen>
     if (!mounted || info.key != _tabContentKey || !_appInForeground) return;
     final px = info.visibleBounds.height;
     _lastContentVisiblePx = px;
-    if (px >= _contentSeenMinPx) {
+    if (px >= _contentSeenMinPx && !_contentObscured) {
       _contentSeenStartMono ??= _tracker.monoNow;
       _contentSeenTab = _currentTab;
       if (px > _contentSeenMaxPx) _contentSeenMaxPx = px;
     } else {
       _closeContentSeen();
     }
+  }
+
+  // The mission brief and dialogs cover the tab content, so time under them
+  // is not counted as "seen".
+  int _modalDepth = 0;
+  bool get _contentObscured => _missionBriefVisible || _modalDepth > 0;
+
+  void _updateObscured(VoidCallback change) {
+    final wasObscured = _contentObscured;
+    change();
+    if (!wasObscured && _contentObscured) {
+      _closeContentSeen();
+    } else if (wasObscured && !_contentObscured) {
+      _resumeContentSeenIfVisible();
+    }
+  }
+
+  void _resumeContentSeenIfVisible() {
+    if (!_appInForeground ||
+        _contentObscured ||
+        _lastContentVisiblePx < _contentSeenMinPx) {
+      return;
+    }
+    _contentSeenStartMono = _tracker.monoNow;
+    _contentSeenTab = _currentTab;
+    _contentSeenMaxPx = _lastContentVisiblePx;
   }
 
   void _closeContentSeen() {
@@ -568,11 +594,7 @@ class _MainScreenState extends State<MainScreen>
   void _onTrackingForeground() {
     _appInForeground = true;
     _enterTab('resume');
-    if (_lastContentVisiblePx >= _contentSeenMinPx) {
-      _contentSeenStartMono = _tracker.monoNow;
-      _contentSeenTab = _currentTab;
-      _contentSeenMaxPx = _lastContentVisiblePx;
-    }
+    _resumeContentSeenIfVisible();
   }
 
   void _selectTab(String tabId) {
@@ -597,6 +619,7 @@ class _MainScreenState extends State<MainScreen>
     _tracker
         .log('participant_id_prompt_shown', props: {'first_time': firstTime});
     final previous = AppPrefs.instance.participantId;
+    _updateObscured(() => _modalDepth++);
     final saved = await showDialog<String>(
       context: context,
       barrierDismissible: !firstTime,
@@ -608,6 +631,7 @@ class _MainScreenState extends State<MainScreen>
         ),
       ),
     );
+    _updateObscured(() => _modalDepth--);
 
     if (saved != null) {
       AppPrefs.instance.participantId = saved;
@@ -1276,6 +1300,7 @@ class _MainScreenState extends State<MainScreen>
   Future<void> _showClearConfirmationDialog(BuildContext context) async {
     _tracker.log('clear_dialog_opened', userAction: true);
     final openedMono = _tracker.monoNow;
+    _updateObscured(() => _modalDepth++);
     final confirmed = await showDialog<bool>(
       context: context,
       barrierDismissible: true,
@@ -1379,6 +1404,7 @@ class _MainScreenState extends State<MainScreen>
         );
       },
     );
+    _updateObscured(() => _modalDepth--);
 
     _tracker.log('clear_dialog_closed', userAction: true, props: {
       'result': confirmed == true
@@ -1676,7 +1702,7 @@ class _MainScreenState extends State<MainScreen>
                   : _tracker.monoNow - _missionShownMono!,
             });
         setState(() {
-          _missionBriefVisible = false;
+          _updateObscured(() => _missionBriefVisible = false);
         });
       },
     );

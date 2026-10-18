@@ -56,7 +56,7 @@ Then one header row and one row per event.
 | `tab_selected` | 1 | target = tab tapped; `from`, `changed` |
 | `tab_entered` | 0 | `reason`: `launch` / `switch` / `resume` |
 | `tab_left` | 0 | `reason`: `switch` / `background`; `duration_ms`, `max_scroll_px`, `scroll_extent_px` |
-| `tab_content_seen` | 0 | target = tab; `duration_ms` the tab's content had ≥ 100 px on screen; `max_visible_px` |
+| `tab_content_seen` | 0 | target = tab; `duration_ms` the tab's content had ≥ 100 px on screen and was not covered by the mission brief or a dialog; `max_visible_px` |
 | `scrolled` | 1 | `from_px`, `to_px`, `extent_px`, `viewport_px`, `duration_ms` |
 | `overlay_opened` / `overlay_closed` | 0 | target = `dialog` / `menu`; `open_ms` on close |
 
@@ -106,7 +106,8 @@ Then one header row and one row per event.
 | `tap` | target = zone (`header`, `pet_stage`, `pet_details`, `progress_bars`, `tab_bar`, `tab_content`, `mission_brief`, `heatmap_popover`, `dialog`, `menu`, `outside`); `x`, `y`, `screen_w`, `screen_h` (logical px); `hold_ms`; `scroll_px`; `content_y`, `content_h` (within tab content); **`handled`** and `handled_by` |
 
 `handled = false` is a **dead tap**: no user action followed within 400 ms, i.e. the participant
-tapped something that does not respond. Drags/scrolls and presses longer than 600 ms are not taps.
+tapped something that does not respond. Closing a menu or dialog by tapping outside it counts as
+handled (`handled_by = overlay_closed`). Drags/scrolls and presses longer than 600 ms are not taps.
 
 ## Suggested derived measures
 

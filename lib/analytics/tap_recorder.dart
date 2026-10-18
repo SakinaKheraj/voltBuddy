@@ -130,7 +130,9 @@ class TrackingNavigatorObserver extends NavigatorObserver {
     final idx = _popups.indexWhere((p) => identical(p.route, route));
     if (idx < 0) return;
     final popup = _popups.removeAt(idx);
-    EventLogger.instance.log('overlay_closed', target: popup.kind, props: {
+    // Counts as a tap response: tapping outside a menu/dialog to close it is
+    // a working interaction, not a dead tap.
+    EventLogger.instance.log('overlay_closed', target: popup.kind, tapResponse: true, props: {
       'open_ms': EventLogger.instance.monoNow - popup.openedMono,
     });
   }

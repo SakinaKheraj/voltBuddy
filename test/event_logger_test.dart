@@ -188,4 +188,43 @@ void main() {
     expect(props(taps.last)['handled_by'], 'button_pressed');
     expect(taps.first['target'], 'test_zone');
   });
+
+  testWidgets('closing a dialog by tapping outside is not a dead tap', (tester) async {
+    await tester.runAsync(initLogger);
+
+    await tester.pumpWidget(MaterialApp(
+      navigatorObservers: [TrackingNavigatorObserver.instance],
+      builder: (context, child) => InteractionTapRecorder(child: child!),
+      home: Builder(
+        builder: (context) => Scaffold(
+          body: Center(
+            child: ElevatedButton(
+              onPressed: () => showDialog<void>(
+                context: context,
+                builder: (_) => const AlertDialog(content: Text('Hi')),
+              ),
+              child: const Text('Open'),
+            ),
+          ),
+        ),
+      ),
+    ));
+
+    await tester.tap(find.text('Open'));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(TrackingNavigatorObserver.instance.topPopupKind, 'dialog');
+
+    await tester.tapAt(const Offset(10, 10)); // barrier, outside the dialog
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.runAsync(logger.flush);
+
+    expect(TrackingNavigatorObserver.instance.topPopupKind, isNull);
+    final events = store.rows.map((r) => r['event']).toList();
+    expect(events, containsAllInOrder(['overlay_opened', 'overlay_closed']));
+    final barrierTap = store.rows.where((r) => r['event'] == 'tap').last;
+    expect(props(barrierTap)['handled'], isTrue);
+    expect(props(barrierTap)['handled_by'], 'overlay_closed');
+  });
 }
