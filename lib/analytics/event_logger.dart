@@ -41,7 +41,7 @@ class EventLogger {
   int _sessionSeq = 0;
   bool _inForeground = true;
   final Stopwatch _foreground = Stopwatch();
-  final Stopwatch _background = Stopwatch();
+  DateTime? _backgroundedAt;
   AppLifecycleListener? _lifecycle;
 
   /// Supplies tab / battery / pet state attached to every event.
@@ -117,9 +117,7 @@ class EventLogger {
     _foreground
       ..stop()
       ..reset();
-    _background
-      ..reset()
-      ..start();
+    _backgroundedAt = DateTime.now();
     unawaited(flush());
   }
 
@@ -128,8 +126,12 @@ class EventLogger {
     if (!enabled || _inForeground) return;
     _inForeground = true;
     _startSession();
-    final bgMs = _background.elapsedMilliseconds;
-    _background.stop();
+    // Wall clock, not a Stopwatch: the monotonic clock stops while the phone
+    // sleeps, which would undercount time away from the app.
+    final bgMs = _backgroundedAt == null
+        ? null
+        : math.max(0, DateTime.now().difference(_backgroundedAt!).inMilliseconds);
+    _backgroundedAt = null;
     final source = await _readLaunchSource();
     log('app_foregrounded', props: {'bg_duration_ms': bgMs, 'launch_source': source});
     for (final hook in List.of(_afterForeground)) {

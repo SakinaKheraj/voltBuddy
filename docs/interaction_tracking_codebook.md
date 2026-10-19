@@ -1,6 +1,6 @@
 # VoltBuddy Phase 2 — Interaction Tracking Codebook
 
-App version `2.1.1+3` (earlier pilot exports show `2.1.0+2`). This describes `interaction_logs_<ParticipantID>.csv`, exported next to
+App version `2.1.2+4` (earlier pilot exports show `2.1.0+2`). This describes `interaction_logs_<ParticipantID>.csv`, exported next to
 `charge_logs_<ParticipantID>.csv` from the Logs tab (**Share CSV**).
 
 ## How data is collected
@@ -30,7 +30,7 @@ Then one header row and one row per event.
 | `source` | `app` or `native` |
 | `ts_utc_ms` | Event time, Unix epoch milliseconds |
 | `ts_local` | Same time in the phone's local time with UTC offset |
-| `mono_ms` | Milliseconds since app process start (monotonic; unaffected by clock changes) |
+| `mono_ms` | Milliseconds since app process start (monotonic; unaffected by clock changes, but **pauses while the phone sleeps** — use `ts_utc_ms` for gaps between sessions) |
 | `event` | Event name (see below) |
 | `user_action` | `1` = caused directly by the participant; `0` = shown by the app / system |
 | `tab` | Tab selected at that moment: `tab-stats`, `tab-tips`, `tab-data` (Logs), `tab-sandbox` (Dev) |
@@ -47,7 +47,7 @@ Then one header row and one row per event.
 | Event | user_action | props |
 |---|---|---|
 | `app_opened` | 0 | `cold_start`, `launch_source` (`notification` / `launcher_or_recents`) |
-| `app_foregrounded` | 0 | `bg_duration_ms`, `launch_source` |
+| `app_foregrounded` | 0 | `bg_duration_ms` (wall clock; pilot builds before 2.1.2 undercounted it while the phone slept), `launch_source` |
 | `app_backgrounded` | 0 | `fg_duration_ms` (length of this foreground session) |
 
 ### Navigation and attention
