@@ -1,6 +1,6 @@
 # VoltBuddy Phase 2 — Interaction Tracking Codebook
 
-App version `2.1.0+2`. This describes `interaction_logs_<ParticipantID>.csv`, exported next to
+App version `2.1.1+3` (earlier pilot exports show `2.1.0+2`). This describes `interaction_logs_<ParticipantID>.csv`, exported next to
 `charge_logs_<ParticipantID>.csv` from the Logs tab (**Share CSV**).
 
 ## How data is collected
@@ -75,7 +75,7 @@ Then one header row and one row per event.
 | `heatmap_day_closed` | 1 | target = date; `open_ms` |
 | `heatmap_mode_selected` | 1 | target = mode; `from`, `changed` |
 | `log_card_toggled` | 1 | `index`, `expanded`, `session_date` |
-| `export_tapped` | 1 | — |
+| `export_tapped` | 1 | `already_running` (repeat taps while an export is open are ignored) |
 | `export_result` | 0 | `status` (`success` / `dismissed` / `unavailable` / `error`), `files`, `charge_sessions`, `csv_lines` |
 | `clear_dialog_opened` | 1 | — |
 | `clear_dialog_closed` | 1 | `result`: `confirmed` / `cancelled` / `dismissed`; `open_ms` |
@@ -105,8 +105,9 @@ Then one header row and one row per event.
 |---|---|
 | `tap` | target = zone (`header`, `pet_stage`, `pet_details`, `progress_bars`, `tab_bar`, `tab_content`, `mission_brief`, `heatmap_popover`, `dialog`, `menu`, `outside`); `x`, `y`, `screen_w`, `screen_h` (logical px); `hold_ms`; `scroll_px`; `content_y`, `content_h` (within tab content); **`handled`** and `handled_by` |
 
-`handled = false` is a **dead tap**: no user action followed within 400 ms, i.e. the participant
-tapped something that does not respond. Closing a menu or dialog by tapping outside it counts as
+`handled = false` is a **dead tap**: no user action was logged between the finger touching down and
+250 ms after it lifted, i.e. the participant tapped something that does not respond. A touch that
+stops a moving list counts as handled (`handled_by = scroll_stop`). Closing a menu or dialog by tapping outside it counts as
 handled (`handled_by = overlay_closed`). Drags/scrolls and presses longer than 600 ms are not taps.
 
 ## Suggested derived measures
@@ -131,6 +132,8 @@ handled (`handled_by = overlay_closed`). Drags/scrolls and presses longer than 6
 - If Android kills the app while it is open, no `app_backgrounded` is written; treat the last
   event of the session as its end.
 - Visibility is sampled about every 0.5 s.
+- `export_result` is logged after the share sheet closes, so it appears in the *next* export,
+  not in the file being shared.
 - Expanded log cards collapse when the app refreshes its data (every ~10 s while open;
   Phase 1 behaviour, unchanged), so `log_card_toggled` collapses may be under-counted.
 - `persona` and `species` are now saved between launches (they reset to Gen Z / Cat in Phase 1).

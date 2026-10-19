@@ -17,6 +17,10 @@ class InteractionTapRecorder extends StatefulWidget {
   const InteractionTapRecorder({super.key, required this.child});
 
   static const Duration responseWindow = Duration(milliseconds: 400);
+
+  /// Tap handlers run when the finger lifts; an action logged more than this
+  /// long after lift-off belongs to something else (e.g. the next tap).
+  static const Duration responseSlack = Duration(milliseconds: 250);
   static const Duration maxTapDuration = Duration(milliseconds: 600);
 
   @override
@@ -58,7 +62,8 @@ class _InteractionTapRecorderState extends State<InteractionTapRecorder> {
   void _onUp(PointerUpEvent e, EventLogger logger) {
     final down = _downs.remove(e.pointer);
     if (down == null || down.moved) return;
-    final holdMs = logger.monoNow - down.mono;
+    final upMono = logger.monoNow;
+    final holdMs = upMono - down.mono;
     if (holdMs > InteractionTapRecorder.maxTapDuration.inMilliseconds) return;
 
     // Resolve region and state now, before the tap's handler changes the UI.
@@ -70,7 +75,15 @@ class _InteractionTapRecorderState extends State<InteractionTapRecorder> {
     final size = MediaQuery.maybeSizeOf(context);
 
     Timer(InteractionTapRecorder.responseWindow, () {
-      final handledBy = logger.firstTapResponseSince(down.mono);
+      // A touch on a moving list stops the scroll; the scroll ends at that
+      // touch. That is a working interaction, not a dead tap.
+      final stoppedScroll = logger.lastScrollEndMono >= down.mono - 50 &&
+          logger.lastScrollEndMono <= upMono;
+      final handledBy = logger.firstTapResponseBetween(
+            down.mono,
+            upMono + InteractionTapRecorder.responseSlack.inMilliseconds,
+          ) ??
+          (stoppedScroll ? 'scroll_stop' : null);
       logger.log(
         'tap',
         target: region['zone'] as String?,

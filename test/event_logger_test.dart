@@ -117,9 +117,17 @@ void main() {
     final since = logger.monoNow;
     logger.log('unplug_nudge_shown');
     logger.log('scrolled', userAction: true, tapResponse: false);
-    expect(logger.firstTapResponseSince(since), isNull);
+    expect(logger.firstTapResponseBetween(since, since + 10000), isNull);
     logger.log('talk_tapped', userAction: true);
-    expect(logger.firstTapResponseSince(since), 'talk_tapped');
+    expect(logger.firstTapResponseBetween(since, since + 10000), 'talk_tapped');
+  });
+
+  test("a later tap's action is not credited to an earlier tap", () async {
+    await initLogger();
+    // Tap A: down at 1000, up at 1190 (no handler). Tap B's action at 1548.
+    logger.log('tab_selected', userAction: true, atMono: 1548);
+    expect(logger.firstTapResponseBetween(1000, 1190 + 250), isNull);
+    expect(logger.firstTapResponseBetween(1518, 1548 + 250), 'tab_selected');
   });
 
   test('CSV export has metadata header and one line per event', () async {

@@ -515,6 +515,7 @@ class _MainScreenState extends State<MainScreen>
         n.direction != ScrollDirection.idle) {
       _scrollUserDriven = true;
     } else if (n is ScrollEndNotification && _scrollStartPx != null) {
+      _tracker.lastScrollEndMono = _tracker.monoNow;
       final from = _scrollStartPx!;
       final to = n.metrics.pixels;
       if (_scrollUserDriven && (to - from).abs() >= 8) {
@@ -1186,7 +1187,11 @@ class _MainScreenState extends State<MainScreen>
     final rect =
         box != null ? (box.localToGlobal(Offset.zero) & box.size) : null;
 
-    _tracker.log('export_tapped', userAction: true);
+    _tracker.log('export_tapped',
+        userAction: true, props: {'already_running': _exporting});
+    // Ignore repeat taps while the share sheet is being prepared or is open.
+    if (_exporting) return;
+    _exporting = true;
     try {
       final sessions = await BatteryDb().getAllChargeSessions();
       if (sessions.isEmpty && !_tracker.enabled) {
@@ -1294,8 +1299,12 @@ class _MainScreenState extends State<MainScreen>
     } catch (e) {
       _tracker.log('export_result', props: {'status': 'error'});
       _spawnFloatingText("Share failed: $e", NeoColors.rpgBad);
+    } finally {
+      _exporting = false;
     }
   }
+
+  bool _exporting = false;
 
   Future<void> _showClearConfirmationDialog(BuildContext context) async {
     _tracker.log('clear_dialog_opened', userAction: true);

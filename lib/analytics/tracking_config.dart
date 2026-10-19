@@ -11,4 +11,4 @@ const bool kEventViewerEnabled =
     bool.fromEnvironment('VB_EVENT_VIEWER', defaultValue: false);
 
 /// Keep in sync with `version:` in pubspec.yaml.
-const String kAppVersion = '2.1.0+2';
+const String kAppVersion = '2.1.1+3';

@@ -212,13 +212,19 @@ class EventLogger {
     }
   }
 
-  /// Name of the first user action logged at or after [sinceMono], if any.
-  String? firstTapResponseSince(int sinceMono) {
+  /// Name of the first user action logged between [fromMono] and [toMono]
+  /// (inclusive), if any. Bounding the window stops a later tap's action
+  /// being credited to an earlier tap.
+  String? firstTapResponseBetween(int fromMono, int toMono) {
     for (final r in _recentTapResponses) {
-      if (r.mono >= sinceMono) return r.event;
+      if (r.mono >= fromMono && r.mono <= toMono) return r.event;
     }
     return null;
   }
+
+  /// Set by the main screen when a scroll comes to rest; used to recognise a
+  /// touch that only stopped a scroll.
+  int lastScrollEndMono = -1;
 
   Future<void> flush() async {
     if (!_initialized) return;
@@ -351,6 +357,7 @@ class EventLogger {
     _afterForeground.clear();
     _sessionCounter = 0;
     _inForeground = true;
+    lastScrollEndMono = -1;
     contextProvider = null;
     tapContextResolver = null;
     _initialized = false;
