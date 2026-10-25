@@ -1,6 +1,6 @@
 # VoltBuddy Phase 2 — Interaction Tracking Codebook
 
-App version `2.2.0+5` (earlier pilot exports show `2.1.x`). This describes `interaction_logs_<ParticipantID>.csv`, exported next to
+App version `2.2.1+6` (earlier pilot exports show `2.1.x` / `2.2.0`). This describes `interaction_logs_<ParticipantID>.csv`, exported next to
 `charge_logs_<ParticipantID>.csv` from the Logs tab (**Share CSV**).
 
 ## How data is collected
@@ -96,11 +96,11 @@ Then one header row and one row per event.
 ### Native (background service)
 | Event | props |
 |---|---|
-| `native_power_connected` | `level`, `state`, `plugged_source`, `temp_c` |
+| `native_power_connected` | `level`, `state` (`connected`), `plugged_source` (often `none`: Android's plug-in signal has no charger type — use the value on `native_power_disconnected`), `temp_c` |
 | `native_unplug_nudge_posted` | Notification text changed to "85% Target Reached! Unplug soon". Once per charge. `level`, `start_pct`, `temp_c`, `screen_on` and `locked` (was the phone in use at that moment) |
 | `native_screen_on_after_nudge` | First time the screen turned on after the nudge, during the same charge. `level` |
 | `native_unlock_after_nudge` | First unlock after the nudge, during the same charge. `level` |
-| `native_power_disconnected` | `level`, `start_pct`, `start_ts`, `nudge_posted`, `temp_c` |
+| `native_power_disconnected` | `level`, `state` (`disconnected`), `plugged_source` (charger type for the whole charge, from 2.2.1), `start_pct`, `start_ts`, `nudge_posted`, `temp_c` |
 | `native_heartbeat` | Once per day while the background service runs. `level`, `state` + device status fields |
 | `native_service_started` / `native_service_stopped` | Background service started (incl. restarts after being killed) / stopped. Started includes device status fields |
 | `native_boot_completed` | Phone restarted |
@@ -122,7 +122,8 @@ seen — exclude those charges from nudge-effect analyses.
 | `tap` | target = zone (`header`, `pet_stage`, `pet_details`, `progress_bars`, `tab_bar`, `tab_content`, `mission_brief`, `heatmap_popover`, `dialog`, `menu`, `outside`); `x`, `y`, `screen_w`, `screen_h` (logical px); `hold_ms`; `scroll_px`; `content_y`, `content_h` (within tab content); **`handled`** and `handled_by` |
 
 `handled = false` is a **dead tap**: no user action was logged between the finger touching down and
-250 ms after it lifted, i.e. the participant tapped something that does not respond. A touch that
+250 ms after it lifted (or the next touch, if sooner), i.e. the participant tapped something that
+does not respond. A touch that
 stops a moving list counts as handled (`handled_by = scroll_stop`). Closing a menu or dialog by tapping outside it counts as
 handled (`handled_by = overlay_closed`). Drags/scrolls and presses longer than 600 ms are not taps.
 
@@ -152,6 +153,12 @@ handled (`handled_by = overlay_closed`). Drags/scrolls and presses longer than 6
 - If Android kills the app while it is open, no `app_backgrounded` is written; treat the last
   event of the session as its end.
 - Visibility is sampled about every 0.5 s.
+- `app_version` on `native` rows is the version of the background service that recorded the event
+  (from 2.2.1). Earlier native rows show the version of the app that imported them.
+- `export_result.status = unavailable` means Android did not report what happened in the share
+  sheet (common on Android); it does not mean the export failed.
+- **Phase 1 `Power Source` column is unreliable:** before 2.2.1 the charger type was taken from
+  Android's plug-in signal, which has none, so most Phase 1 sessions show `none`.
 - `export_result` is logged after the share sheet closes, so it appears in the *next* export,
   not in the file being shared.
 - Expanded log cards collapse when the app refreshes its data (every ~10 s while open;

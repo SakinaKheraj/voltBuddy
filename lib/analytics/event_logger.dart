@@ -186,6 +186,7 @@ class EventLogger {
     int? atMono,
     String source = 'app',
     Map<String, Object?>? contextOverride,
+    String? appVersion,
   }) {
     if (!enabled) return;
     try {
@@ -215,7 +216,7 @@ class EventLogger {
         'hp': ctx['hp'],
         'xp': ctx['xp'],
         'rank_index': ctx['rank_index'],
-        'app_version': kAppVersion,
+        'app_version': appVersion ?? kAppVersion,
       });
 
       if (tapResponse ?? userAction) {
@@ -246,9 +247,33 @@ class EventLogger {
     return null;
   }
 
-  /// Set by the main screen when a scroll comes to rest; used to recognise a
-  /// touch that only stopped a scroll.
-  int lastScrollEndMono = -1;
+  // Recent touch-downs and scroll stops (monotonic ms), used to attribute taps.
+  final List<int> _touchDowns = [];
+  final List<int> _scrollEnds = [];
+
+  void recordTouchDown(int mono) => _remember(_touchDowns, mono);
+
+  /// Called by the main screen whenever a scroll comes to rest.
+  void recordScrollEnd() => _remember(_scrollEnds, monoNow);
+
+  /// The first touch-down strictly after [mono]: a tap's handler runs before
+  /// the next finger lands, so anything later belongs to the next tap.
+  int? nextTouchDownAfter(int mono) {
+    for (final t in _touchDowns) {
+      if (t > mono) return t;
+    }
+    return null;
+  }
+
+  /// Whether a scroll came to rest between [fromMono] and [toMono], i.e. the
+  /// touch only stopped a moving list.
+  bool scrollEndedBetween(int fromMono, int toMono) =>
+      _scrollEnds.any((t) => t >= fromMono && t <= toMono);
+
+  static void _remember(List<int> list, int mono) {
+    list.add(mono);
+    if (list.length > 20) list.removeAt(0);
+  }
 
   Future<void> flush() async {
     if (!_initialized) return;
@@ -286,6 +311,9 @@ class EventLogger {
         final props = Map<String, Object?>.from(e)
           ..remove('event')
           ..remove('ts_ms');
+        // Native events carry the version of the service that recorded them
+        // (from 2.2.1); older ones fall back to the importing app's version.
+        final recordedBy = props.remove('app_version') as String?;
         final level = (props['level'] as num?)?.toInt();
         final state = props['state'] as String?;
         log(
@@ -294,6 +322,7 @@ class EventLogger {
           at: DateTime.fromMillisecondsSinceEpoch(tsMs),
           props: props,
           tapResponse: false,
+          appVersion: recordedBy,
           contextOverride: {
             'battery_pct': level,
             'battery_state': state,
@@ -381,7 +410,8 @@ class EventLogger {
     _afterForeground.clear();
     _sessionCounter = 0;
     _inForeground = true;
-    lastScrollEndMono = -1;
+    _touchDowns.clear();
+    _scrollEnds.clear();
     _lastDeviceStatus = null;
     contextProvider = null;
     tapContextResolver = null;

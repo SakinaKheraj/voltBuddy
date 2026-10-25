@@ -45,8 +45,11 @@ class _InteractionTapRecorderState extends State<InteractionTapRecorder> {
 
     return Listener(
       behavior: HitTestBehavior.translucent,
-      onPointerDown: (e) =>
-          _downs[e.pointer] = _PointerDown(e.position, logger.monoNow, DateTime.now()),
+      onPointerDown: (e) {
+        final mono = logger.monoNow;
+        logger.recordTouchDown(mono);
+        _downs[e.pointer] = _PointerDown(e.position, mono, DateTime.now());
+      },
       onPointerMove: (e) {
         final down = _downs[e.pointer];
         if (down != null && (e.position - down.position).distance > kTouchSlop) {
@@ -77,12 +80,15 @@ class _InteractionTapRecorderState extends State<InteractionTapRecorder> {
     Timer(InteractionTapRecorder.responseWindow, () {
       // A touch on a moving list stops the scroll; the scroll ends at that
       // touch. That is a working interaction, not a dead tap.
-      final stoppedScroll = logger.lastScrollEndMono >= down.mono - 50 &&
-          logger.lastScrollEndMono <= upMono;
-      final handledBy = logger.firstTapResponseBetween(
-            down.mono,
-            upMono + InteractionTapRecorder.responseSlack.inMilliseconds,
-          ) ??
+      final stoppedScroll =
+          logger.scrollEndedBetween(down.mono - 50, upMono + 50);
+      // The response window closes at the next touch-down, so a missed tap
+      // is never credited with the next tap's action.
+      var windowEnd =
+          upMono + InteractionTapRecorder.responseSlack.inMilliseconds;
+      final nextDown = logger.nextTouchDownAfter(down.mono);
+      if (nextDown != null && nextDown < windowEnd) windowEnd = nextDown;
+      final handledBy = logger.firstTapResponseBetween(down.mono, windowEnd) ??
           (stoppedScroll ? 'scroll_stop' : null);
       logger.log(
         'tap',

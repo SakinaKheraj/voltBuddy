@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:voltbuddy/analytics/event_logger.dart';
 import 'package:voltbuddy/analytics/event_store.dart';
 import 'package:voltbuddy/analytics/tap_recorder.dart';
+import 'package:voltbuddy/analytics/tracking_config.dart';
 
 void main() {
   late MemoryEventStore store;
@@ -144,6 +145,39 @@ void main() {
     expect(logger.firstTapResponseBetween(since, since + 10000), isNull);
     logger.log('talk_tapped', userAction: true);
     expect(logger.firstTapResponseBetween(since, since + 10000), 'talk_tapped');
+  });
+
+  test('rapid taps: the window closes at the next touch-down', () async {
+    await initLogger();
+    // Missed tap: down 1000, up 1056. Next tap lands at 1150; its action at 1180.
+    logger.recordTouchDown(1000);
+    logger.recordTouchDown(1150);
+    logger.log('species_selected', userAction: true, atMono: 1180);
+    final next = logger.nextTouchDownAfter(1000);
+    expect(next, 1150);
+    final windowEnd = next! < 1056 + 250 ? next : 1056 + 250;
+    expect(logger.firstTapResponseBetween(1000, windowEnd), isNull);
+    expect(logger.firstTapResponseBetween(1150, 1180 + 250), 'species_selected');
+  });
+
+  test('scroll stops are matched against all recent stops', () async {
+    await initLogger();
+    logger.recordScrollEnd();
+    final first = logger.monoNow;
+    expect(logger.scrollEndedBetween(first - 50, first + 50), isTrue);
+    expect(logger.scrollEndedBetween(first + 100000, first + 200000), isFalse);
+  });
+
+  test("native events keep the version of the service that recorded them", () async {
+    await initLogger(nativeEvents: [
+      {'event': 'native_heartbeat', 'ts_ms': 1, 'app_version': '9.9.9+99'},
+      {'event': 'native_heartbeat', 'ts_ms': 2},
+    ]);
+    await logger.flush();
+    final native = store.rows.where((r) => r['source'] == 'native').toList();
+    expect(native.first['app_version'], '9.9.9+99');
+    expect(native.last['app_version'], kAppVersion); // older: importing app's version
+    expect(native.first['props'], isNull); // version moved out of props
   });
 
   test("a later tap's action is not credited to an earlier tap", () async {

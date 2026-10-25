@@ -263,6 +263,14 @@ class VoltBatteryService : Service() {
         val nowDate = dateFormat.format(now)
         val nowTime = timeFormat.format(now)
         val tempTenthsC = batteryTempTenthsC(intent)
+        // ACTION_POWER_CONNECTED/DISCONNECTED carry no battery extras, so
+        // `state` would read "discharging"; label the study events honestly.
+        val eventState = when {
+            status != -1 -> state
+            action == Intent.ACTION_POWER_CONNECTED -> "connected"
+            action == Intent.ACTION_POWER_DISCONNECTED -> "disconnected"
+            else -> state
+        }
         maybeLogHeartbeat(now, nowDate, level, state)
 
         Log.d(TAG, "BatteryEvent [$action]: level=$level%, state=$state, isCharging=$isChargingNow, wasCharging=$wasCharging")
@@ -271,7 +279,7 @@ class VoltBatteryService : Service() {
         if ((isChargingNow && !wasCharging) || action == Intent.ACTION_POWER_CONNECTED) {
             Log.d(TAG, "⚡ CHARGING STARTED at $nowTime, Level: $level% ($pluggedSource)")
             if (!wasCharging) {
-                appendStudyEvent("native_power_connected", now, level, state, true, tempTenthsC) {
+                appendStudyEvent("native_power_connected", now, level, eventState, true, tempTenthsC) {
                     put("plugged_source", pluggedSource)
                 }
             }
@@ -299,7 +307,8 @@ class VoltBatteryService : Service() {
 
             Log.d(TAG, "🔌 CHARGING ENDED at $nowTime: $startPct% -> $level% ($startDate $startTime -> $nowDate $nowTime)")
             if (wasCharging) {
-                appendStudyEvent("native_power_disconnected", now, level, state, false, tempTenthsC) {
+                appendStudyEvent("native_power_disconnected", now, level, eventState, false, tempTenthsC) {
+                    put("plugged_source", startSource)
                     put("start_pct", startPct)
                     put("start_ts", prefs.getString(PREF_START_TIMESTAMP, null) ?: JSONObject.NULL)
                     put("nudge_posted", prefs.getBoolean(PREF_NUDGE_LOGGED, false))
@@ -332,6 +341,11 @@ class VoltBatteryService : Service() {
         // 3. CONTINUOUS LEVEL UPDATE WHILE CHARGING OR DISCHARGING
         else {
             if (isChargingNow) {
+                // The plug-in broadcast has no charger type, so the session may
+                // have started as "none"; fill it in once Android reports it.
+                if (plugged != 0 && prefs.getString(PREF_PLUGGED_SOURCE, "none") == "none") {
+                    prefs.edit().putString(PREF_PLUGGED_SOURCE, pluggedSource).apply()
+                }
                 val startPct = prefs.getInt(PREF_START_PCT, level)
                 val gained = (level - startPct).coerceAtLeast(0)
                 val statusText = if (level >= 85) {

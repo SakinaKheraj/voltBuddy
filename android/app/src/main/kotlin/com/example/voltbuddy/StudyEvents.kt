@@ -31,6 +31,7 @@ object StudyEvents {
             val record = JSONObject().apply {
                 put("event", event)
                 put("ts_ms", tsMs)
+                put("app_version", appVersion(context))
                 props()
             }
             val file = File(context.filesDir, EVENTS_FILE)
@@ -46,6 +47,27 @@ object StudyEvents {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to append study event $event: ${e.message}")
         }
+    }
+
+    private var cachedVersion: String? = null
+
+    /** Version of the app that recorded the event, e.g. "2.2.1+6" (same format as Dart). */
+    private fun appVersion(context: Context): String {
+        cachedVersion?.let { return it }
+        val version = try {
+            val info = context.packageManager.getPackageInfo(context.packageName, 0)
+            val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                info.longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                info.versionCode.toLong()
+            }
+            "${info.versionName}+$code"
+        } catch (e: Exception) {
+            "unknown"
+        }
+        cachedVersion = version
+        return version
     }
 
     /**

@@ -516,7 +516,7 @@ class _MainScreenState extends State<MainScreen>
         n.direction != ScrollDirection.idle) {
       _scrollUserDriven = true;
     } else if (n is ScrollEndNotification && _scrollStartPx != null) {
-      _tracker.lastScrollEndMono = _tracker.monoNow;
+      _tracker.recordScrollEnd();
       final from = _scrollStartPx!;
       final to = n.metrics.pixels;
       if (_scrollUserDriven && (to - from).abs() >= 8) {
