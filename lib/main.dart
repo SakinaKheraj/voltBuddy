@@ -64,6 +64,7 @@ void main() async {
     await EventLogger.instance.init(
       launchSourceReader: BatterySnapshotService.getLaunchSource,
       nativeEventsReader: BatterySnapshotService.getAndClearNativeEvents,
+      deviceStatusReader: BatterySnapshotService.getDeviceStatus,
     );
   } catch (e) {
     debugPrint("Failed to initialize interaction tracking: $e");
@@ -4266,7 +4267,7 @@ class _ParticipantIdDialogState extends State<_ParticipantIdDialog> {
                 color: NeoColors.rpgText,
               ),
               decoration: InputDecoration(
-                hintText: 'e.g. 202301173',
+                hintText: 'e.g. 202300000',
                 errorText: _error,
                 filled: true,
                 fillColor: Colors.white,

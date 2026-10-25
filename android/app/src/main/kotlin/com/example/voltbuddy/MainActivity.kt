@@ -61,6 +61,7 @@ class MainActivity : FlutterActivity() {
                     "getBatterySnapshot" -> result.success(getBatterySnapshot())
                     "getAndClearNativeRecords" -> result.success(getAndClearNativeRecords())
                     "getAndClearNativeEvents" -> result.success(getAndClearNativeEvents())
+                    "getDeviceStatus" -> result.success(StudyEvents.deviceStatus(this))
                     "getLaunchSource" -> {
                         result.success(pendingLaunchSource)
                         pendingLaunchSource = null
@@ -167,14 +168,14 @@ class MainActivity : FlutterActivity() {
     }
 
     /**
-     * Reads and clears interaction-study events written by [VoltBatteryService].
+     * Reads and clears interaction-study events written by [StudyEvents].
      */
     private fun getAndClearNativeEvents(): List<Map<String, Any?>> {
-        val file = File(filesDir, VoltBatteryService.EVENTS_FILE)
+        val file = File(filesDir, StudyEvents.EVENTS_FILE)
         if (!file.exists()) return emptyList()
 
         val events = mutableListOf<Map<String, Any?>>()
-        synchronized(VoltBatteryService.EVENTS_FILE) {
+        synchronized(StudyEvents.EVENTS_FILE) {
             try {
                 val array = JSONArray(file.readText())
                 for (i in 0 until array.length()) {

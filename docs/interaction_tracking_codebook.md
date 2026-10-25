@@ -1,6 +1,6 @@
 # VoltBuddy Phase 2 — Interaction Tracking Codebook
 
-App version `2.1.2+4` (earlier pilot exports show `2.1.0+2`). This describes `interaction_logs_<ParticipantID>.csv`, exported next to
+App version `2.2.0+5` (earlier pilot exports show `2.1.x`). This describes `interaction_logs_<ParticipantID>.csv`, exported next to
 `charge_logs_<ParticipantID>.csv` from the Logs tab (**Share CSV**).
 
 ## How data is collected
@@ -96,9 +96,25 @@ Then one header row and one row per event.
 ### Native (background service)
 | Event | props |
 |---|---|
-| `native_power_connected` | `level`, `state`, `plugged_source` |
-| `native_unplug_nudge_posted` | Notification text changed to "85% Target Reached! Unplug soon". Once per charge. `level`, `start_pct` |
-| `native_power_disconnected` | `level`, `start_pct`, `start_ts`, `nudge_posted` |
+| `native_power_connected` | `level`, `state`, `plugged_source`, `temp_c` |
+| `native_unplug_nudge_posted` | Notification text changed to "85% Target Reached! Unplug soon". Once per charge. `level`, `start_pct`, `temp_c`, `screen_on` and `locked` (was the phone in use at that moment) |
+| `native_screen_on_after_nudge` | First time the screen turned on after the nudge, during the same charge. `level` |
+| `native_unlock_after_nudge` | First unlock after the nudge, during the same charge. `level` |
+| `native_power_disconnected` | `level`, `start_pct`, `start_ts`, `nudge_posted`, `temp_c` |
+| `native_heartbeat` | Once per day while the background service runs. `level`, `state` + device status fields |
+| `native_service_started` / `native_service_stopped` | Background service started (incl. restarts after being killed) / stopped. Started includes device status fields |
+| `native_boot_completed` | Phone restarted |
+
+Screen state is recorded **only** between the 85% notification and unplugging, and only the first
+screen-on and first unlock per charge. No other phone use is recorded.
+
+### Device status
+| Event | props |
+|---|---|
+| `device_status` | Logged on app start, and on later opens only if something changed (`changed`). `notifications_enabled` (app notifications allowed), `monitor_channel_enabled` (the VoltBuddy notification channel is not switched off), `battery_unrestricted` (exempt from battery optimisation, i.e. "Unrestricted"), `background_restricted` (Android "Restricted" background mode) |
+
+If `notifications_enabled` or `monitor_channel_enabled` is false, the 85% notification could not be
+seen — exclude those charges from nudge-effect analyses.
 
 ### Raw taps
 | Event | props |
@@ -119,6 +135,10 @@ handled (`handled_by = overlay_closed`). Drags/scrolls and presses longer than 6
 - **Nudge → unplug latency**: for each charge, `native_power_disconnected.ts_utc_ms −
   native_unplug_nudge_posted.ts_utc_ms`; compare charges with and without a nudge
   (`nudge_posted`). Also check whether the app was opened between the two.
+- **Could the nudge be seen?** `screen_on` at the nudge, time to `native_screen_on_after_nudge` /
+  `native_unlock_after_nudge`, and `notifications_enabled` from the latest `device_status` /
+  `native_heartbeat`.
+- **Tracking coverage**: days with a `native_heartbeat` ÷ study days; service restarts per week.
 - **Notification-driven opens**: `launch_source = notification`.
 - **Engagement over time**: active days, sessions/day, feature events per week.
 - **Dead-tap rate** by zone.

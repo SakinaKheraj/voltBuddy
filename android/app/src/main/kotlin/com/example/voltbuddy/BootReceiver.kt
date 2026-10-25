@@ -22,6 +22,7 @@ class BootReceiver : BroadcastReceiver() {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
 
         Log.d(TAG, "Device rebooted — starting VoltBatteryService")
+        StudyEvents.append(context, "native_boot_completed")
 
         try {
             val serviceIntent = Intent(context, VoltBatteryService::class.java)

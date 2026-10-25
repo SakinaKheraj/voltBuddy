@@ -52,6 +52,8 @@ class EventLogger {
 
   Future<String?> Function()? _launchSourceReader;
   Future<List<Map<String, Object?>>> Function()? _nativeEventsReader;
+  Future<Map<String, Object?>> Function()? _deviceStatusReader;
+  String? _lastDeviceStatus;
 
   final List<VoidCallback> _beforeBackground = [];
   final List<VoidCallback> _afterForeground = [];
@@ -64,11 +66,13 @@ class EventLogger {
     bool attachLifecycle = true,
     Future<String?> Function()? launchSourceReader,
     Future<List<Map<String, Object?>>> Function()? nativeEventsReader,
+    Future<Map<String, Object?>> Function()? deviceStatusReader,
   }) async {
     if (!kInteractionTrackingEnabled || _initialized) return;
     _store = store ?? SqfliteEventStore();
     _launchSourceReader = launchSourceReader;
     _nativeEventsReader = nativeEventsReader;
+    _deviceStatusReader = deviceStatusReader;
     _mono
       ..reset()
       ..start();
@@ -80,6 +84,7 @@ class EventLogger {
       'cold_start': true,
       'launch_source': await _readLaunchSource(),
     });
+    await _logDeviceStatusIfChanged(force: true);
     await importNativeEvents();
 
     if (attachLifecycle) {
@@ -137,7 +142,24 @@ class EventLogger {
     for (final hook in List.of(_afterForeground)) {
       _safely(hook);
     }
+    await _logDeviceStatusIfChanged();
     await importNativeEvents();
+  }
+
+  /// Logs notification / battery-optimisation settings on cold start, and on
+  /// later foregrounds only when they changed (e.g. notifications turned off).
+  Future<void> _logDeviceStatusIfChanged({bool force = false}) async {
+    if (_deviceStatusReader == null) return;
+    try {
+      final status = await _deviceStatusReader!();
+      if (status.isEmpty) return;
+      final encoded = jsonEncode(status);
+      if (!force && encoded == _lastDeviceStatus) return;
+      log('device_status', props: {...status, 'changed': _lastDeviceStatus != null});
+      _lastDeviceStatus = encoded;
+    } catch (e) {
+      debugPrint('VoltBuddy: device status check failed: $e');
+    }
   }
 
   void _startSession() {
@@ -360,6 +382,7 @@ class EventLogger {
     _sessionCounter = 0;
     _inForeground = true;
     lastScrollEndMono = -1;
+    _lastDeviceStatus = null;
     contextProvider = null;
     tapContextResolver = null;
     _initialized = false;

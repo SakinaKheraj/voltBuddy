@@ -87,6 +87,30 @@ void main() {
     expect(props(store.rows[3])['launch_source'], 'launcher_or_recents');
   });
 
+  test('device status is logged at start and again only when it changes', () async {
+    var status = <String, Object?>{'notifications_enabled': true, 'battery_unrestricted': false};
+    store = MemoryEventStore();
+    await logger.init(
+      store: store,
+      attachLifecycle: false,
+      deviceStatusReader: () async => status,
+    );
+
+    logger.handleHide();
+    await logger.handleShow(); // unchanged -> not logged again
+    status = {'notifications_enabled': false, 'battery_unrestricted': false};
+    logger.handleHide();
+    await logger.handleShow(); // notifications turned off -> logged
+    await logger.flush();
+
+    final rows = store.rows.where((r) => r['event'] == 'device_status').toList();
+    expect(rows, hasLength(2));
+    expect(props(rows.first)['notifications_enabled'], isTrue);
+    expect(props(rows.first)['changed'], isFalse);
+    expect(props(rows.last)['notifications_enabled'], isFalse);
+    expect(props(rows.last)['changed'], isTrue);
+  });
+
   test('imports native events with their own timestamps', () async {
     final ts = DateTime(2026, 10, 18, 9, 30).millisecondsSinceEpoch;
     await initLogger(nativeEvents: [
@@ -134,16 +158,16 @@ void main() {
     await initLogger();
     logger.log('species_selected',
         target: 'dog', props: {'note': 'has "quotes", commas\nand newline'});
-    final csv = await logger.buildCsv(participantId: '202301173', installId: 'abcd');
+    final csv = await logger.buildCsv(participantId: 'P000000', installId: 'abcd');
     final lines = csv.trimRight().split('\n');
 
     expect(lines.where((l) => l.startsWith('# Participant ID')).single,
-        contains('202301173'));
+        contains('P000000'));
     final header = lines.firstWhere((l) => !l.startsWith('#'));
     expect(header.split(',').take(3), ['participant_id', 'install_id', 'event_id']);
     final dataLines = lines.skipWhile((l) => l.startsWith('#')).skip(1).toList();
     expect(dataLines, hasLength(2));
-    expect(dataLines.last, startsWith('202301173,abcd,2,'));
+    expect(dataLines.last, startsWith('P000000,abcd,2,'));
     // The props field survives CSV quoting and decodes back to the original.
     final quoted = RegExp(r',"(\{.*\})",').firstMatch(dataLines.last)!.group(1)!;
     final decoded = jsonDecode(quoted.replaceAll('""', '"')) as Map;

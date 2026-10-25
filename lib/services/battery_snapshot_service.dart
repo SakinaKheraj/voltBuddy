@@ -189,6 +189,20 @@ class BatterySnapshotService {
     }
   }
 
+  /// Notification and battery-optimisation settings that decide whether the
+  /// study's notification and background tracking can work on this phone.
+  static Future<Map<String, Object?>> getDeviceStatus() async {
+    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return const {};
+    try {
+      final result =
+          await _channel.invokeMapMethod<String, Object?>('getDeviceStatus');
+      return result ?? const {};
+    } catch (e) {
+      debugPrint('VoltBuddy: Failed to read device status: $e');
+      return const {};
+    }
+  }
+
   /// Returns and clears interaction-study events recorded by the native
   /// service while the app was closed (plug/unplug, 85% notification).
   static Future<List<Map<String, Object?>>> getAndClearNativeEvents() async {

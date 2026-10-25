@@ -1,5 +1,6 @@
 package com.example.voltbuddy
 
+import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -14,8 +15,10 @@ import android.content.pm.ServiceInfo
 import android.os.BatteryManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.example.voltbuddy.StudyEvents.putAll
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -40,9 +43,11 @@ class VoltBatteryService : Service() {
         const val CHANNEL_ID = "voltbuddy_battery_monitor"
         const val NOTIFICATION_ID = 1001
         const val RECORDS_FILE = "battery_bg_records.json"
-        // Phase 2 interaction-study events, read by MainActivity.getAndClearNativeEvents
-        const val EVENTS_FILE = "voltbuddy_native_events.json"
+        // Phase 2 interaction-study flags (see StudyEvents)
         private const val PREF_NUDGE_LOGGED = "unplug_nudge_logged"
+        private const val PREF_SCREEN_ON_LOGGED = "screen_on_after_nudge_logged"
+        private const val PREF_UNLOCK_LOGGED = "unlock_after_nudge_logged"
+        private const val PREF_HEARTBEAT_DATE = "study_heartbeat_date"
         private const val PREFS_NAME = "voltbuddy_battery_prefs"
         private const val PREF_IS_CHARGING = "is_charging"
         private const val PREF_START_PCT = "start_pct"
@@ -63,6 +68,9 @@ class VoltBatteryService : Service() {
         createNotificationChannel()
         startAsForeground(getInitialNotification())
         registerBatteryReceiver()
+        StudyEvents.append(this, "native_service_started") {
+            putAll(StudyEvents.deviceStatus(this@VoltBatteryService))
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -77,6 +85,7 @@ class VoltBatteryService : Service() {
 
     override fun onDestroy() {
         Log.d(TAG, "VoltBatteryService onDestroy")
+        StudyEvents.append(this, "native_service_stopped")
         unregisterBatteryReceiver()
         super.onDestroy()
     }
@@ -166,7 +175,10 @@ class VoltBatteryService : Service() {
         batteryReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 if (intent == null) return
-                handleBatteryEvent(intent)
+                when (intent.action) {
+                    Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT -> handleScreenEvent(intent.action!!)
+                    else -> handleBatteryEvent(intent)
+                }
             }
         }
 
@@ -174,6 +186,9 @@ class VoltBatteryService : Service() {
             addAction(Intent.ACTION_BATTERY_CHANGED)
             addAction(Intent.ACTION_POWER_CONNECTED)
             addAction(Intent.ACTION_POWER_DISCONNECTED)
+            // Phase 2: only acted on during a charge, after the 85% notification
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
         }
 
         try {
@@ -247,6 +262,8 @@ class VoltBatteryService : Service() {
         val nowIso = isoFormat.format(now)
         val nowDate = dateFormat.format(now)
         val nowTime = timeFormat.format(now)
+        val tempTenthsC = batteryTempTenthsC(intent)
+        maybeLogHeartbeat(now, nowDate, level, state)
 
         Log.d(TAG, "BatteryEvent [$action]: level=$level%, state=$state, isCharging=$isChargingNow, wasCharging=$wasCharging")
 
@@ -254,12 +271,14 @@ class VoltBatteryService : Service() {
         if ((isChargingNow && !wasCharging) || action == Intent.ACTION_POWER_CONNECTED) {
             Log.d(TAG, "⚡ CHARGING STARTED at $nowTime, Level: $level% ($pluggedSource)")
             if (!wasCharging) {
-                appendStudyEvent("native_power_connected", now, level, state, true) {
+                appendStudyEvent("native_power_connected", now, level, state, true, tempTenthsC) {
                     put("plugged_source", pluggedSource)
                 }
             }
             prefs.edit().apply {
                 putBoolean(PREF_NUDGE_LOGGED, false)
+                putBoolean(PREF_SCREEN_ON_LOGGED, false)
+                putBoolean(PREF_UNLOCK_LOGGED, false)
                 putBoolean(PREF_IS_CHARGING, true)
                 putInt(PREF_START_PCT, level)
                 putString(PREF_START_DATE, nowDate)
@@ -280,7 +299,7 @@ class VoltBatteryService : Service() {
 
             Log.d(TAG, "🔌 CHARGING ENDED at $nowTime: $startPct% -> $level% ($startDate $startTime -> $nowDate $nowTime)")
             if (wasCharging) {
-                appendStudyEvent("native_power_disconnected", now, level, state, false) {
+                appendStudyEvent("native_power_disconnected", now, level, state, false, tempTenthsC) {
                     put("start_pct", startPct)
                     put("start_ts", prefs.getString(PREF_START_TIMESTAMP, null) ?: JSONObject.NULL)
                     put("nudge_posted", prefs.getBoolean(PREF_NUDGE_LOGGED, false))
@@ -301,6 +320,8 @@ class VoltBatteryService : Service() {
                 remove(PREF_START_TIMESTAMP)
                 remove(PREF_PLUGGED_SOURCE)
                 putBoolean(PREF_NUDGE_LOGGED, false)
+                putBoolean(PREF_SCREEN_ON_LOGGED, false)
+                putBoolean(PREF_UNLOCK_LOGGED, false)
                 apply()
             }
 
@@ -316,8 +337,13 @@ class VoltBatteryService : Service() {
                 val statusText = if (level >= 85) {
                     if (!prefs.getBoolean(PREF_NUDGE_LOGGED, false)) {
                         prefs.edit().putBoolean(PREF_NUDGE_LOGGED, true).apply()
-                        appendStudyEvent("native_unplug_nudge_posted", now, level, state, true) {
+                        appendStudyEvent("native_unplug_nudge_posted", now, level, state, true, tempTenthsC) {
                             put("start_pct", startPct)
+                            // Was the phone in use when the notification was posted?
+                            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                            val km = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+                            put("screen_on", pm.isInteractive)
+                            put("locked", km.isKeyguardLocked)
                         }
                     }
                     "85% Target Reached! Unplug soon ⚡"
@@ -373,39 +399,70 @@ class VoltBatteryService : Service() {
         appendRecordToFile(session)
     }
 
-    /**
-     * Records a Phase 2 interaction-study event. Kept in a separate file from
-     * [RECORDS_FILE] so the existing charge-session import is unaffected.
-     */
+    /** Records a Phase 2 interaction-study event with the battery state. */
     private fun appendStudyEvent(
         event: String,
         at: Date,
         level: Int,
         state: String,
         isCharging: Boolean,
+        tempTenthsC: Int,
         extra: JSONObject.() -> Unit = {}
     ) {
-        try {
-            val record = JSONObject().apply {
-                put("event", event)
-                put("ts_ms", at.time)
-                put("level", level)
-                put("state", state)
-                put("is_charging", isCharging)
-                extra()
-            }
-            val file = File(filesDir, EVENTS_FILE)
-            synchronized(EVENTS_FILE) {
-                val array = if (file.exists()) {
-                    try { JSONArray(file.readText()) } catch (e: Exception) { JSONArray() }
-                } else {
-                    JSONArray()
-                }
-                array.put(record)
-                file.writeText(array.toString())
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to append study event $event: ${e.message}")
+        StudyEvents.append(this, event, at.time) {
+            put("level", level)
+            put("state", state)
+            put("is_charging", isCharging)
+            put("temp_c", if (tempTenthsC >= 0) tempTenthsC / 10.0 else JSONObject.NULL)
+            extra()
+        }
+    }
+
+    /** Battery temperature in tenths of °C, or -1 if unknown. */
+    private fun batteryTempTenthsC(intent: Intent): Int {
+        val fromIntent = intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1)
+        if (fromIntent >= 0) return fromIntent
+        // ACTION_POWER_CONNECTED/DISCONNECTED carry no battery extras.
+        val sticky = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        return sticky?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1) ?: -1
+    }
+
+    /**
+     * Once per calendar day, records that the service is alive along with the
+     * notification and battery-optimisation settings. Lets analysis tell "no
+     * charging that day" apart from "tracking was not running".
+     */
+    private fun maybeLogHeartbeat(now: Date, today: String, level: Int, state: String) {
+        if (prefs.getString(PREF_HEARTBEAT_DATE, null) == today) return
+        prefs.edit().putString(PREF_HEARTBEAT_DATE, today).apply()
+        StudyEvents.append(this, "native_heartbeat", now.time) {
+            put("level", level)
+            put("state", state)
+            putAll(StudyEvents.deviceStatus(this@VoltBatteryService))
+        }
+    }
+
+    /**
+     * Screen-on / unlock, recorded only during a charge after the 85%
+     * notification was posted, and only the first of each per charge. This is
+     * the evidence for whether the participant could have seen the nudge; no
+     * other phone use is recorded.
+     */
+    private fun handleScreenEvent(action: String) {
+        if (!prefs.getBoolean(PREF_IS_CHARGING, false) ||
+            !prefs.getBoolean(PREF_NUDGE_LOGGED, false)
+        ) return
+        val (flag, event) = if (action == Intent.ACTION_SCREEN_ON) {
+            PREF_SCREEN_ON_LOGGED to "native_screen_on_after_nudge"
+        } else {
+            PREF_UNLOCK_LOGGED to "native_unlock_after_nudge"
+        }
+        if (prefs.getBoolean(flag, false)) return
+        prefs.edit().putBoolean(flag, true).apply()
+        val bm = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+        StudyEvents.append(this, event) {
+            put("level", bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY))
+            put("is_charging", true)
         }
     }
 
