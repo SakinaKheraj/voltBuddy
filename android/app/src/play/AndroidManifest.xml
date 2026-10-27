@@ -1,0 +1,24 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <!--
+      Google Play build only (merged over src/main/AndroidManifest.xml).
+      - REQUEST_IGNORE_BATTERY_OPTIMIZATIONS is a restricted permission on Play
+        and the app never actually requests the exemption.
+      - The battery monitor is declared only as a specialUse foreground
+        service; dataSync is for data transfers and would need its own
+        Play declaration.
+    -->
+    <uses-permission
+        android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"
+        tools:node="remove" />
+
+    <application>
+        <service
+            android:name=".VoltBatteryService"
+            android:foregroundServiceType="specialUse"
+            tools:replace="android:foregroundServiceType" />
+    </application>
+</manifest>

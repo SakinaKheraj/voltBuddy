@@ -28,6 +28,8 @@ object StudyEvents {
         props: JSONObject.() -> Unit = {}
     ) {
         try {
+            // Off in the Google Play build: nothing would ever read the file.
+            if (!context.resources.getBoolean(R.bool.study_events_enabled)) return
             val record = JSONObject().apply {
                 put("event", event)
                 put("ts_ms", tsMs)

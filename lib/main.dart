@@ -14,6 +14,7 @@ import 'models/simulation_models.dart';
 
 import 'services/app_prefs.dart';
 import 'services/battery_snapshot_service.dart';
+import 'services/pet_talk_service.dart';
 import 'services/charging_ai_service.dart';
 import 'services/localization_service.dart';
 import 'services/gemini_service.dart';
@@ -249,7 +250,7 @@ class _MainScreenState extends State<MainScreen>
     _loadRealStats();
     _missionBriefTimer = Timer(const Duration(milliseconds: 650), () async {
       if (!mounted) return;
-      if (AppPrefs.instance.participantId == null) {
+      if (kStudyFeatures && AppPrefs.instance.participantId == null) {
         await _promptParticipantId(firstTime: true);
       }
       if (mounted) {
@@ -384,6 +385,21 @@ class _MainScreenState extends State<MainScreen>
   Future<void> _talkToPet() async {
     final state = _getHealthState();
     final rankName = _getRankName(_currentRankIndex);
+
+    // The Play build ships without a Gemini key: answer offline instead.
+    if (kPlayBuild) {
+      final reply = const PetTalkService().line(
+        healthState: state,
+        persona: _currentLanguage,
+        rankName: rankName,
+        isCharging: _isCharging,
+        batteryLevel: _currentBatteryLevel,
+        overcharges: _globalMetrics.overcharges,
+        criticalStarts: _globalMetrics.criticalStarts,
+      );
+      _showSpeechBubble('"$reply"');
+      return;
+    }
 
     String explanation = "";
     if (state == "sick" || state == "tired") {
@@ -1203,7 +1219,7 @@ class _MainScreenState extends State<MainScreen>
       // Fetch device info from native Android
       final deviceInfo = await BatterySnapshotService.getDeviceInfo();
       final participantId = AppPrefs.instance.participantId ?? 'UNKNOWN';
-      final fileTag = _fileSafe(participantId);
+      final fileTag = kStudyFeatures ? '_${_fileSafe(participantId)}' : '';
       final tempDir = await getTemporaryDirectory();
       final shareFiles = <XFile>[];
 
@@ -1213,7 +1229,9 @@ class _MainScreenState extends State<MainScreen>
       csvBuffer.writeln("# ========================================================");
       csvBuffer.writeln("# VoltBuddy Longitudinal Behavioral Research Logs");
       csvBuffer.writeln("# Export Timestamp : ${DateTime.now().toIso8601String()}");
-      csvBuffer.writeln("# Participant ID   : $participantId");
+      if (kStudyFeatures) {
+        csvBuffer.writeln("# Participant ID   : $participantId");
+      }
       csvBuffer.writeln("# App Version      : $kAppVersion");
       if (deviceInfo != null) {
         final manufacturer = deviceInfo['manufacturer'] ?? 'Unknown';
@@ -1254,7 +1272,7 @@ class _MainScreenState extends State<MainScreen>
       }
 
       if (sessions.isNotEmpty) {
-        final file = File('${tempDir.path}/charge_logs_$fileTag.csv');
+        final file = File('${tempDir.path}/charge_logs$fileTag.csv');
         await file.writeAsString(csvBuffer.toString());
         shareFiles.add(XFile(file.path));
       }
@@ -1268,7 +1286,7 @@ class _MainScreenState extends State<MainScreen>
         );
         eventCount = '\n'.allMatches(eventsCsv).length;
         final eventsFile =
-            File('${tempDir.path}/interaction_logs_$fileTag.csv');
+            File('${tempDir.path}/interaction_logs$fileTag.csv');
         await eventsFile.writeAsString(eventsCsv);
         shareFiles.add(XFile(eventsFile.path));
       }
@@ -3164,26 +3182,28 @@ class _MainScreenState extends State<MainScreen>
               ),
           ],
         ),
-        const SizedBox(height: 10),
-        GestureDetector(
-          onTap: () => _promptParticipantId(firstTime: false),
-          child: Row(
-            children: [
-              const Icon(Icons.badge, color: NeoColors.rpgText, size: 14.0),
-              const SizedBox(width: 6),
-              Text(
-                "PARTICIPANT ID: ${AppPrefs.instance.participantId ?? 'NOT SET'}",
-                style: const TextStyle(
-                    fontFamily: 'Space Grotesk',
-                    fontWeight: FontWeight.bold,
-                    fontSize: 10.5,
-                    color: NeoColors.rpgText),
-              ),
-              const SizedBox(width: 4),
-              const Icon(Icons.edit, color: NeoColors.rpgText, size: 12.0),
-            ],
+        if (kStudyFeatures) ...[
+          const SizedBox(height: 10),
+          GestureDetector(
+            onTap: () => _promptParticipantId(firstTime: false),
+            child: Row(
+              children: [
+                const Icon(Icons.badge, color: NeoColors.rpgText, size: 14.0),
+                const SizedBox(width: 6),
+                Text(
+                  "PARTICIPANT ID: ${AppPrefs.instance.participantId ?? 'NOT SET'}",
+                  style: const TextStyle(
+                      fontFamily: 'Space Grotesk',
+                      fontWeight: FontWeight.bold,
+                      fontSize: 10.5,
+                      color: NeoColors.rpgText),
+                ),
+                const SizedBox(width: 4),
+                const Icon(Icons.edit, color: NeoColors.rpgText, size: 12.0),
+              ],
+            ),
           ),
-        ),
+        ],
         if (_timelineCards.isEmpty) ...[
           const SizedBox(height: 32),
           Container(

@@ -45,9 +45,27 @@ android {
         }
     }
 
-    buildTypes {
-        release {
-            signingConfig = if (keystorePropertiesFile.exists()) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
+    // Two builds from one codebase:
+    //  study - the research build sideloaded to participants. Must keep the
+    //          Phase 1 app ID and debug key so it updates their installed app.
+    //  play  - the Google Play build: its own app ID, signed with the upload
+    //          key from android/key.properties (not in git).
+    flavorDimensions += "distribution"
+    productFlavors {
+        create("study") {
+            dimension = "distribution"
+            applicationId = "com.example.voltbuddy"
+            signingConfig = signingConfigs.getByName("debug")
+            resValue("bool", "study_events_enabled", "true")
+        }
+        create("play") {
+            dimension = "distribution"
+            applicationId = "com.voltbuddy.app"
+            // No research event log in the public app (see StudyEvents).
+            resValue("bool", "study_events_enabled", "false")
+            if (keystorePropertiesFile.exists()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 }
