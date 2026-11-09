@@ -45,7 +45,7 @@ Your phone's battery becomes your pet's life force. Charge between 20% and 85% a
 FEATURES
 • Virtual pet (cat, dog or rabbit) that reacts to your real charging habits
 • Automatic charging-session tracking, even when the app is closed
-• "Unplug at 85%" reminder in the ongoing notification
+• A pop-up "unplug now" reminder when your battery reaches 85%
 • Weekly report, habit insights and a charging-quality heatmap
 • Full charge history with start/end level, duration and charge speed
 • Regular or Gen Z language mode
@@ -106,9 +106,9 @@ The Play build declares only **Special use**.
 | Field | Answer |
 |---|---|
 | Foreground service type | **Special use** |
-| Feature description | `VoltBuddy continuously monitors the battery level and charger connection to record each charging session (start and end level, time) and to show a live "unplug at 85%" reminder in its notification while the phone charges. Android provides no foreground-service type for battery monitoring. The service shows a persistent, low-priority notification at all times, uses no location, camera or microphone, and does not transfer data.` |
+| Feature description | `VoltBuddy continuously monitors the battery level and charger connection to record each charging session (start and end level, time) and to alert the user the moment the battery reaches 85% while charging, so they can unplug. Android provides no foreground-service type for battery monitoring, and charger connect/disconnect broadcasts are not delivered to apps that are not running. The service shows a minimised, silent notification ("VoltBuddy is tracking your charging") that the user can hide, uses no location, camera or microphone, and does not transfer data.` |
 | What happens if the task is interrupted/deferred? | `Charging sessions would be missed or recorded with wrong start/end times, and the user would not get the 85% unplug reminder at the moment it matters.` |
-| Video link | Record a 30–60 s screen video: open VoltBuddy → plug in the charger → pull down the notification shade to show the VoltBuddy notification updating (e.g. "Charging (xx%)") → unplug → reopen the app to show the session logged. Upload to YouTube as **Unlisted** (or Google Drive "anyone with the link") and paste the link. |
+| Video link | Record a 30–60 s screen video: open VoltBuddy → pull down the notification shade to show the "VoltBuddy is tracking your charging" notification → plug in the charger while the battery is just under 85% → show the "Battery at 85% – time to unplug" pop-up → unplug → reopen the app to show the session logged. Upload to YouTube as **Unlisted** (or Google Drive "anyone with the link") and paste the link. |
 
 Manifest already contains the required subtype property:
 `android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE = "Real-time continuous battery health and charge cycle logging"`.
@@ -148,7 +148,7 @@ Exporting your data
 If you tap "Share CSV", the app creates a file with your charging history and opens Android's share menu. You choose where the file goes; the app does not send it anywhere on its own.
 
 Permissions
-- Notifications: to show the ongoing battery notification and the 85% unplug reminder.
+- Notifications: to show the background-tracking notification (which you can hide) and the 85% unplug reminder.
 - Foreground service and start at boot: to keep recording charging sessions when the app is closed and after the phone restarts.
 - Internet: used only to download the app's fonts.
 

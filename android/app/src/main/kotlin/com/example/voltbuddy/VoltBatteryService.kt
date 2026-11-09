@@ -42,6 +42,18 @@ class VoltBatteryService : Service() {
         private const val TAG = "VoltBuddy.Service"
         const val CHANNEL_ID = "voltbuddy_battery_monitor"
         const val NOTIFICATION_ID = 1001
+        // Quiet-notification builds (Google Play): a minimised tracker that is
+        // never updated, plus a separate one-off reminder at 85%.
+        const val TRACKER_CHANNEL_ID = "voltbuddy_tracker"
+        const val REMINDER_CHANNEL_ID = "voltbuddy_reminders"
+        const val REMINDER_NOTIFICATION_ID = 1002
+
+        /** True while the service is running in this process. */
+        @Volatile
+        var isRunning = false
+
+        fun quietNotifications(context: Context): Boolean =
+            context.resources.getBoolean(R.bool.quiet_notifications)
         const val RECORDS_FILE = "battery_bg_records.json"
         // Phase 2 interaction-study flags (see StudyEvents)
         private const val PREF_NUDGE_LOGGED = "unplug_nudge_logged"
@@ -59,6 +71,7 @@ class VoltBatteryService : Service() {
 
     private var batteryReceiver: BroadcastReceiver? = null
     private lateinit var prefs: SharedPreferences
+    private val quiet by lazy { quietNotifications(this) }
 
     override fun onCreate() {
         super.onCreate()
@@ -68,6 +81,7 @@ class VoltBatteryService : Service() {
         createNotificationChannel()
         startAsForeground(getInitialNotification())
         registerBatteryReceiver()
+        isRunning = true
         StudyEvents.append(this, "native_service_started") {
             putAll(StudyEvents.deviceStatus(this@VoltBatteryService))
         }
@@ -85,6 +99,7 @@ class VoltBatteryService : Service() {
 
     override fun onDestroy() {
         Log.d(TAG, "VoltBatteryService onDestroy")
+        isRunning = false
         StudyEvents.append(this, "native_service_stopped")
         unregisterBatteryReceiver()
         super.onDestroy()
@@ -109,6 +124,30 @@ class VoltBatteryService : Service() {
     }
 
     private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && quiet) {
+            val manager = getSystemService(NotificationManager::class.java) ?: return
+            manager.createNotificationChannel(NotificationChannel(
+                TRACKER_CHANNEL_ID,
+                "Background tracking",
+                NotificationManager.IMPORTANCE_MIN // collapsed, silent, usually no status-bar icon
+            ).apply {
+                description = "Keeps VoltBuddy recording your charging sessions. You can hide it; tracking keeps running."
+                setShowBadge(false)
+                enableVibration(false)
+                enableLights(false)
+            })
+            manager.createNotificationChannel(NotificationChannel(
+                REMINDER_CHANNEL_ID,
+                "Charging reminders",
+                NotificationManager.IMPORTANCE_HIGH // pops up once per charge at 85%
+            ).apply {
+                description = "Tells you when your battery reaches 85% so you can unplug."
+                setShowBadge(false)
+            })
+            // An earlier test build created the old always-updating channel.
+            try { manager.deleteNotificationChannel(CHANNEL_ID) } catch (_: Exception) {}
+            return
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
@@ -126,10 +165,11 @@ class VoltBatteryService : Service() {
     }
 
     private fun getInitialNotification(): Notification {
+        if (quiet) return buildTrackerNotification()
         return buildNotification("VoltBuddy Battery Guard", "Monitoring battery health actively ⚡")
     }
 
-    private fun buildNotification(title: String, content: String): Notification {
+    private fun openAppIntent(requestCode: Int): PendingIntent {
         // Explicit intent (rather than the launcher intent) so a tap on the
         // notification is delivered to a running activity via onNewIntent and
         // can be told apart from a launcher open.
@@ -139,15 +179,18 @@ class VoltBatteryService : Service() {
                 Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra(MainActivity.EXTRA_LAUNCH_SOURCE, "notification")
         }
-        val pendingIntent = PendingIntent.getActivity(
+        return PendingIntent.getActivity(
             this,
-            0,
+            requestCode,
             launchIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
         )
+    }
 
-        val iconRes = applicationInfo.icon.takeIf { it != 0 } ?: android.R.drawable.ic_lock_idle_charging
+    private val iconRes: Int
+        get() = applicationInfo.icon.takeIf { it != 0 } ?: android.R.drawable.ic_lock_idle_charging
 
+    private fun buildNotification(title: String, content: String): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(content)
@@ -155,11 +198,55 @@ class VoltBatteryService : Service() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setContentIntent(pendingIntent)
+            .setContentIntent(openAppIntent(0))
             .build()
     }
 
+    /** The quiet, never-updated notification the foreground service requires. */
+    private fun buildTrackerNotification(): Notification {
+        return NotificationCompat.Builder(this, TRACKER_CHANNEL_ID)
+            .setContentTitle("VoltBuddy is tracking your charging")
+            .setContentText("You can hide this notification. Tracking keeps running.")
+            .setSmallIcon(R.drawable.ic_stat_voltbuddy)
+            .setOngoing(true)
+            .setSilent(true)
+            .setShowWhen(false)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .setContentIntent(openAppIntent(0))
+            .build()
+    }
+
+    /** One pop-up per charge when the battery reaches 85% (quiet builds). */
+    private fun showUnplugReminder(level: Int) {
+        try {
+            val notification = NotificationCompat.Builder(this, REMINDER_CHANNEL_ID)
+                .setContentTitle("Battery at $level% – time to unplug ⚡")
+                .setContentText("Unplugging around 85% keeps your battery (and your pet) healthy.")
+                .setSmallIcon(R.drawable.ic_stat_voltbuddy)
+                .setAutoCancel(true)
+                // Nothing private in it, and the lock screen is where it is seen while charging.
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_REMINDER)
+                .setContentIntent(openAppIntent(1))
+                .build()
+            (getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)
+                ?.notify(REMINDER_NOTIFICATION_ID, notification)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to show unplug reminder: ${e.message}")
+        }
+    }
+
+    private fun cancelUnplugReminder() {
+        (getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)
+            ?.cancel(REMINDER_NOTIFICATION_ID)
+    }
+
     private fun updateNotification(title: String, content: String) {
+        // Quiet builds never touch the tracker after posting it, so a user who
+        // swipes it away does not see it come back.
+        if (quiet) return
         try {
             val notification = buildNotification(title, content)
             val manager = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
@@ -296,6 +383,7 @@ class VoltBatteryService : Service() {
                 apply()
             }
 
+            if (quiet) cancelUnplugReminder()
             updateNotification("⚡ VoltBuddy • Charging ($level%)", "Plugged into $pluggedSource • Target 85% recommended")
         }
         // 2. UNPLUG DETECTED: transition from true -> false (or ACTION_POWER_DISCONNECTED)
@@ -334,6 +422,7 @@ class VoltBatteryService : Service() {
                 apply()
             }
 
+            if (quiet) cancelUnplugReminder()
             val gained = level - startPct
             val gainedText = if (gained > 0) "+$gained% gained" else "$level%"
             updateNotification("🔋 VoltBuddy Battery Guard", "Active • Battery $gainedText ($level%)")
@@ -351,6 +440,7 @@ class VoltBatteryService : Service() {
                 val statusText = if (level >= 85) {
                     if (!prefs.getBoolean(PREF_NUDGE_LOGGED, false)) {
                         prefs.edit().putBoolean(PREF_NUDGE_LOGGED, true).apply()
+                        if (quiet) showUnplugReminder(level)
                         appendStudyEvent("native_unplug_nudge_posted", now, level, state, true, tempTenthsC) {
                             put("start_pct", startPct)
                             // Was the phone in use when the notification was posted?

@@ -87,6 +87,9 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun startVoltBatteryService() {
+        // Quiet builds: re-starting a running service would re-post its
+        // notification after the user hid it.
+        if (VoltBatteryService.quietNotifications(this) && VoltBatteryService.isRunning) return
         try {
             val serviceIntent = Intent(this, VoltBatteryService::class.java)
             ContextCompat.startForegroundService(this, serviceIntent)

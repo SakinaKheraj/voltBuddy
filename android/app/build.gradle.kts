@@ -57,12 +57,15 @@ android {
             applicationId = "com.example.voltbuddy"
             signingConfig = signingConfigs.getByName("debug")
             resValue("bool", "study_events_enabled", "true")
+            resValue("bool", "quiet_notifications", "false")
         }
         create("play") {
             dimension = "distribution"
             applicationId = "com.voltbuddy.app"
             // No research event log in the public app (see StudyEvents).
             resValue("bool", "study_events_enabled", "false")
+            // Quiet tracker notification + separate 85% reminder (VoltBatteryService).
+            resValue("bool", "quiet_notifications", "true")
             if (keystorePropertiesFile.exists()) {
                 signingConfig = signingConfigs.getByName("release")
             }
