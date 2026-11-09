@@ -145,7 +145,7 @@ What the app does not do
 The app does not create an account, does not collect your name, contacts, location, photos or messages, has no advertising, and does not use analytics or tracking services. The app does not send your data to us or to any third party.
 
 Exporting your data
-If you tap "Share CSV", the app creates a file with your charging history and opens Android's share menu. You choose where the file goes; the app does not send it anywhere on its own.
+If you tap "Share CSV", the app creates a file with your charging history, your phone model and your Android version, and opens Android's share menu. You choose where the file goes; the app does not send it anywhere on its own.
 
 Permissions
 - Notifications: to show the background-tracking notification (which you can hide) and the 85% unplug reminder.
@@ -153,7 +153,7 @@ Permissions
 - Internet: used only to download the app's fonts.
 
 Deleting your data
-Use Logs → Clear All in the app, or uninstall the app, to delete all stored data.
+Use Logs → Clear All in the app to delete your charging history, or uninstall the app to delete all stored data.
 
 Children
 The app is not directed at children under 13.
