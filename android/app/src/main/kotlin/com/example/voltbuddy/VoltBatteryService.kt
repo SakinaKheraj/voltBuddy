@@ -222,7 +222,11 @@ class VoltBatteryService : Service() {
         try {
             val notification = NotificationCompat.Builder(this, REMINDER_CHANNEL_ID)
                 .setContentTitle("Battery at $level% – time to unplug ⚡")
-                .setContentText("Unplugging around 85% keeps your battery (and your pet) healthy.")
+                // Collapsed notifications show one line of text: keep it short,
+                // and give the full sentence when the notification is expanded.
+                .setContentText("Unplug now to keep your battery healthy.")
+                .setStyle(NotificationCompat.BigTextStyle().bigText(
+                    "Unplug now to keep your battery healthy. Stopping around 85% protects it (and your pet)."))
                 .setSmallIcon(R.drawable.ic_stat_voltbuddy)
                 .setAutoCancel(true)
                 // Nothing private in it, and the lock screen is where it is seen while charging.
